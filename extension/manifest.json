@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "Colab Extras",
+  "short_name": "Colab Extras",
+  "version": "0.6.2",
+  "description": "Everyday tools for Google Colab. Inspect, ZIP, download, and delete folders without running a notebook cell.",
+  "minimum_chrome_version": "120",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://colab.research.google.com/*"
+      ],
+      "js": [
+        "colab-zip.js"
+      ],
+      "run_at": "document_idle",
+      "world": "MAIN"
+    }
+  ],
+  "action": {
+    "default_title": "Colab Extras",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    },
+    "default_popup": "popup.html"
+  }
+}

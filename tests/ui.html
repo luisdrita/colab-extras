@@ -1,0 +1,87 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Colab Extras — UI test harness</title>
+<meta http-equiv="Content-Security-Policy" content="require-trusted-types-for 'script'">
+<style>body{font:15px/1.5 system-ui;background:#f3f5f8;color:#243746;margin:40px;max-width:1000px}h1{font-size:27px;margin-bottom:6px}aside{background:#fff;border:1px solid #ced7df;border-radius:12px;padding:20px;width:270px}colab-file-view{display:block;padding:10px;cursor:context-menu;border-radius:6px}colab-file-view:hover{background:#edf3f7}.file-title-row{display:flex;align-items:center;gap:10px}.menu-button{margin-left:auto}.goog-menu{position:fixed;background:white;box-shadow:0 3px 18px #0003;z-index:100;padding:6px 0;min-width:210px;border-radius:8px}.goog-menuitem{padding:9px 22px;cursor:pointer}.goog-menuitem-highlight{background:#e7f1fa}button,select{font:inherit}#events{white-space:pre-wrap;font:12px monospace;max-width:670px;max-height:250px;overflow:auto;border-top:1px solid #ccd3d9;margin-top:28px;padding-top:15px}p{max-width:690px}.badge{font-size:12px;color:#655600;background:#fff1bc;padding:5px 8px;border-radius:5px}</style>
+<h1>Colab Extras</h1><span class="badge">Local UI test · simulated Colab connection</span>
+<style>
+body{--colab-primary-surface-color:#fff;--colab-primary-text-color:#1f1f1f;--colab-secondary-text-color:#444746;--colab-divider-color:#dadce0;--colab-primary-color:#0b57d0;--colab-highlighted-surface-color:#1f1f1f0a;--colab-chrome-font-family:'Google Sans Text','Google Sans',Roboto,Arial,sans-serif;--colab-google-sans-font-family:'Google Sans',Roboto,Arial,sans-serif}
+body[data-theme="dark"]{color-scheme:dark;background:#131314;color:#e3e3e3;--colab-primary-surface-color:#282a2c;--colab-primary-text-color:#e3e3e3;--colab-secondary-text-color:#c4c7c5;--colab-divider-color:#444746;--colab-primary-color:#a8c7fa;--colab-highlighted-surface-color:rgba(227,227,227,.08);--colab-error-color:#f2b8b5;--colab-warning-container-color:#6d3a01;--colab-on-warning-container-color:#fff2b4}
+body[data-theme="dark"] aside,body[data-theme="dark"] .goog-menu{background:#282a2c;border-color:#444746}body[data-theme="dark"] colab-file-view:hover,body[data-theme="dark"] .goog-menuitem-highlight{background:#37393b}label{display:inline-block;margin-right:12px;margin-bottom:8px}
+@media(max-width:600px){body{margin:16px}h1{font-size:24px}aside{max-width:100%}select{max-width:100%}}
+</style>
+<p>This page loads the exact extension bundle with a fake runtime. Right-click a folder to exercise folder details, immediate ZIP actions, confirmed deletion, inline progress, and cancellation. The archive backend is tested separately on a real Colab VM.</p>
+<label>Scenario <select id="scenario"><option value="normal">Success</option><option value="slow">Slow compression / cancel</option><option value="error">Compression error</option><option value="blocked">Terminal unavailable</option><option value="download-error">Download error</option><option value="delete-error">Deletion permission error</option><option value="details-many">Details: ten long filenames</option><option value="details-empty">Details: empty folder</option><option value="details-partial">Details: unreadable contents</option><option value="details-error">Details: scan error</option><option value="details-slow">Details: slow scan / cancel</option></select></label>
+<label>Theme <select id="theme"><option value="light">Light</option><option value="dark">Colab dark</option></select></label>
+<h2>Files</h2><aside>
+<colab-file-browser></colab-file-browser>
+<colab-file-view data-path="/content/results"><span>📁</span><span>results</span><button class="menu-button" aria-label="More actions for folder: results">⋮</button></colab-file-view>
+<colab-file-view data-path="/content/other-folder"><span>📁</span><span>other-folder</span><button class="menu-button" aria-label="More actions for folder: other-folder">⋮</button></colab-file-view>
+<colab-file-view data-path="/content"><span>📁</span><span>content (protected root)</span><button class="menu-button" aria-label="More actions for folder: content">⋮</button></colab-file-view>
+<colab-file-view data-path="/content/notes.txt" data-file="true"><span>📄</span><span>notes.txt</span></colab-file-view>
+</aside><pre id="events" aria-label="Test events">Ready. No actual Colab connection or files.</pre>
+<script>
+document.getElementById('theme').addEventListener('change',event=>{document.body.dataset.theme=event.target.value;});
+const events=document.getElementById('events');
+const log=text=>{events.textContent+='\n'+text;events.scrollTop=events.scrollHeight;};
+const state={runtime:{},job:null,ticks:0,cancelled:false,deleted:new Set()};
+const scenario=()=>document.getElementById('scenario').value;
+const response=(body,status=200)=>Promise.resolve(new Response(JSON.stringify(body),{status}));
+const kernel={runtime:state.runtime,runtimeProxy:{createSocket:path=>({
+ connect:async()=>{log('Socket '+path);},stop:()=>log('Own terminal closed'),
+ sendString:text=>{const [type,command]=JSON.parse(text);if(type!=='stdin')throw Error('Bad protocol');const args=command.match(/'([^']*)'/g).map(s=>s.slice(1,-1));state.job={path:args[1],dir:args[2],kind:args[0].endsWith('folder_details.py')?'details':args[0].endsWith('delete_folder.py')?'delete':'zip'};state.ticks=0;state.cancelled=false;log((state.job.kind==='details'?'Scan':state.job.kind==='delete'?'Deletion':'Compression')+' started for '+state.job.path);}
+})},getKernelXhr:()=>({fetch:async(path,opts)=>{
+ if(path==='/api/terminals'&&opts.method==='POST')return scenario()==='blocked'?response({},403):response({name:'test-session'});
+ if(opts.method==='DELETE'){log('Removed '+path);return response({});}
+ if(opts.method==='PUT'){if(path.endsWith('/cancel'))state.cancelled=true;return response({});}
+ if(path.startsWith('/api/contents/'))return response({type:'directory'});
+ if(path.startsWith('/files/')){
+   state.ticks++;
+   if(state.job.kind==='details'){
+     if(state.cancelled){log('Folder scan cancelled');return response({state:'cancelled'});}
+     if(scenario()==='details-error')return response({state:'error',error:'Permission denied: selected folder'});
+     const scanning=scenario()==='details-slow'||state.ticks<3;
+     const empty=scenario()==='details-empty',partial=scenario()==='details-partial';
+     const result={state:scanning?'scanning':'details',path:state.job.path,bytes:empty?0:1582915584,files:empty?0:128,folders:empty?0:7,links:empty?0:2,special:0,skipped:partial?1:0,excluded:1,elapsed:1.5,
+       largest:empty?[]:scenario()==='details-many'?Array.from({length:10},(_,index)=>({path:'experiments/training-run-2026-09-26/checkpoints/model-checkpoint-'+index+'.bin',size:(10-index)*1048576})): [{path:'checkpoints/model.bin',size:1073741824},{path:'datasets/training.csv',size:509173760},{path:partial?'notes/<img src=x onerror=alert(1)>.txt':'reports/summary.txt',size:64}],
+       errors:partial?[{path:'private-data',error:'Permission denied'}]:[]};
+     if(!scanning)log('Folder details ready: '+state.job.path);
+     return response(result);
+   }
+   if(state.job.kind==='delete'){
+     if(scenario()==='delete-error')return response({state:'error',error:'Permission denied: protected.txt',partial:true});
+     if(state.ticks<3)return response({state:state.ticks===1?'checking':'deleting'});
+     state.deleted.add(state.job.path);
+     log('Deleted folder: '+state.job.path);
+     return response({state:'deleted',path:state.job.path});
+   }
+   if(state.cancelled)return response({state:'cancelled'});
+   if(scenario()==='error')return response({state:'error',error:'File changed during compression: results.csv'});
+   if(scenario()==='slow'||state.ticks<3)return response({state:'compressing',done:state.ticks*12,total:100,files:state.ticks});
+   return response({state:'ready',archive:state.job.path+'.zip',size:8192,files:3});
+ }
+ return response({},404);
+}})};
+window.colab={global:{notebook:{getKernel:()=>kernel}}};
+document.querySelector('colab-file-browser').currentTree={refresh:async()=>{for(const view of document.querySelectorAll('colab-file-view'))if(state.deleted.has(view.dataset.path))view.remove();log('Files sidebar refreshed');},files:{getFile:async path=>({download:async progress=>{if(scenario()==='download-error')throw Error('Download connection lost');progress.update(0.4);await new Promise(r=>setTimeout(r,200));if(progress.canceled)throw Error('Cancelled');progress.update(1);log('Download requested: '+path);}})}};
+let closingMenu=false;
+function closeMenu(){
+ if(closingMenu)return;
+ closingMenu=true;
+ try{document.getElementById('context-menu')?.remove();}finally{closingMenu=false;}
+}
+function openMenu(view,event){
+ event.preventDefault();closeMenu();
+ const menu=document.createElement('div');menu.id='context-menu';menu.className='goog-menu';menu.setAttribute('role','menu');menu.setAttribute('aria-label','More actions for '+(view.file.isDirectory?'folder':'file')+': '+view.file.name);
+ menu.style.left=(event.clientX||300)+'px';menu.style.top=(event.clientY||300)+'px';
+ const item=document.createElement('div');item.className='goog-menuitem';item.textContent='Open';item.setAttribute('role','menuitem');menu.append(item);
+ // Colab's Closure popup disposes itself on blur. A focusable injected
+ // item therefore disappears on mouse-down, before a normal click fires.
+ menu.tabIndex=0;menu.addEventListener('blur',closeMenu);
+ menu.addEventListener('keydown',e=>{if(e.key==='Escape')closeMenu();});document.body.append(menu);menu.focus();
+}
+for(const view of document.querySelectorAll('colab-file-view')){
+ const row=document.createElement('div');row.className='file-title-row';row.append(...view.childNodes);view.append(row);
+ view.file={path:view.dataset.path.replace(/^\//,''),name:view.dataset.path.split('/').pop(),isDirectory:!view.dataset.file};
+ view.addEventListener('contextmenu',e=>openMenu(view,e));view.querySelector('button')?.addEventListener('click',e=>openMenu(view,e));
+}
+document.addEventListener('click',e=>{if(!e.target.closest('colab-file-view')&&!e.target.closest('[role="menu"]'))closeMenu();});
+</script><script src="../extension/colab-zip.js"></script></html>
