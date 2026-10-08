@@ -1,7 +1,7 @@
 // ZIP actions are immediate. Permanent deletion requires an exact-path confirmation.
 if (document.querySelector('meta[name="colab-folder-zip-version"]')) return;
 const marker=document.createElement('meta');
-marker.name='colab-folder-zip-version';marker.content='0.6.2';document.head.append(marker);
+marker.name='colab-folder-zip-version';marker.content='0.8.0';document.head.append(marker);
 const jobs=new Map();
 let selected=null;
 function context(){
@@ -11,40 +11,58 @@ function context(){
   if(!xhr || !kernel?.runtime)throw new Error('Connect to a Colab runtime first.');
   return {kernel,xhr,runtime:kernel.runtime};
 }
+function filePath(view){
+  const file=view?.getFile?.() || view?.file;
+  return typeof file?.path==='string' ? '/'+file.path.replace(/^\//,'') : null;
+}
 function folderPath(view){
   const file=view?.getFile?.() || view?.file;
-  return file?.isDirectory && typeof file.path==='string' ? '/'+file.path.replace(/^\//,'') : null;
+  return file?.isDirectory ? filePath(view) : null;
 }
-function setStatus(job,label,detail=label,error=false){
+function setStatus(job,label,detail=label,error=false,progress=null){
+  job.status={label,detail,error,progress};
   // Keep feedback with its folder, including after Colab refreshes the file tree.
-  const view=job.view?.isConnected ? job.view : [...document.querySelectorAll('colab-file-view')].find(v=>folderPath(v)===job.path);
+  const view=job.view?.isConnected ? job.view : [...document.querySelectorAll('colab-file-view')].find(v=>filePath(v)===job.path);
   if(!view)return;
   job.view=view;
-  let badge=view.querySelector('[data-cfz-status]');
+  // A parent folder must never reuse a nested child's status badge.
+  let badge=[...view.querySelectorAll('[data-cfz-status]')].find(node=>node.closest('colab-file-view')===view);
   if(!badge){
     badge=document.createElement('span');badge.dataset.cfzStatus='';
-    badge.setAttribute('role','status');badge.setAttribute('aria-live','polite');
+    const text=document.createElement('span');text.dataset.cfzStatusText='';
+    text.setAttribute('role','status');text.setAttribute('aria-live','polite');
+    text.style.cssText='min-width:0;overflow:hidden;text-overflow:ellipsis;';badge.append(text);
   }
   if(error){
-    badge.style.cssText='display:block;margin:3px 8px 5px 24px;font:12px/1.4 system-ui;white-space:normal;overflow-wrap:anywhere;';
-    view.insertBefore(badge,view.querySelector('.child-files'));
+    badge.style.cssText='display:block;margin:3px 8px 5px 24px;font-size:12px;line-height:1.4;font-family:inherit;white-space:normal;overflow-wrap:anywhere;';
+    const children=[...view.children].find(node=>node.classList.contains('child-files'));
+    if(badge.parentElement!==view)view.insertBefore(badge,children||null);
   }else{
-    badge.style.cssText='margin-left:8px;font:11px/1.4 system-ui;white-space:nowrap;max-width:150px;overflow:hidden;text-overflow:ellipsis;flex-shrink:1;';
-    (view.querySelector('.file-title-row')||view).append(badge);
+    badge.style.cssText='display:inline-flex;align-items:center;gap:6px;margin-left:8px;font-size:12px;line-height:18px;font-family:inherit;white-space:nowrap;max-width:160px;min-width:18px;flex:0 1 auto;';
+    const row=[...view.children].find(node=>node.classList.contains('file-title-row'))||view;
+    if(badge.parentElement!==row)row.append(badge);
   }
-  badge.textContent=error?label+': '+detail:label;badge.title=detail;badge.setAttribute('aria-label',detail);
-  badge.style.color=error?'#d93025':'inherit';
+  const text=badge.querySelector('[data-cfz-status-text]'),value=error?label+': '+detail:label;
+  if(text.textContent!==value)text.textContent=value;
+  badge.title=detail;
+  badge.style.color=error?'var(--colab-error-color,#b3261e)':'var(--colab-secondary-text-color,inherit)';
+  const busy=!error&&!job.finished&&jobs.get(job.path)===job;
+  if(busy){
+    if(!badge.cfzProgress){badge.cfzProgress=createProgress(label);badge.prepend(badge.cfzProgress.element);}
+    badge.cfzProgress.update(label,progress);
+  }else if(badge.cfzProgress){badge.cfzProgress.element.remove();badge.cfzProgress=null;}
   badge.dataset.cfzJob=job.id;
   job.badge=badge;
 }
 function finishStatus(job,label,detail,error=false){
+  job.finished=true;
   setStatus(job,label,detail,error);
   if(!error)setTimeout(()=>{if(job.badge?.dataset.cfzJob===job.id)job.badge.remove();},10000);
 }
 async function cleanup(job){
   if(!job.created)return;
   // Only job staging files are removed. The saved sibling ZIP is retained.
-  const names=['archive.py','delete_folder.py','folder_details.py','status.json','status.tmp','pid','cancel','archive.partial'];
+  const names=['archive.py','extract_archive.py','delete_folder.py','folder_details.py','status.json','status.tmp','pid','cancel','archive.partial'];
   if(job.kind==='zip')names.push(job.path.split('/').pop()+'.zip');
   for(const name of names){
     try{await request(job.ctx,'/api/contents/'+encodePath(job.dir+'/'+name),'DELETE');}
@@ -86,7 +104,8 @@ async function run(target,download){
       if(result.state==='ready'){validateArchive(result,path);job.result=result;break;}
       if(!['scanning','compressing','saving'].includes(result.state))throw new Error('Unexpected compression status.');
       const label=result.state==='saving'?'Saving ZIP':'Zipping';
-      setStatus(job,result.total>0?`${label} ${Math.round(result.done/result.total*100)}%`:`${label}…`);
+      const fraction=Number.isFinite(result.done)&&Number.isFinite(result.total)&&result.total>0?Math.min(1,Math.max(0,result.done/result.total)):null;
+      setStatus(job,fraction!==null?`${label} ${Math.round(fraction*100)}%`:`${label}…`,undefined,false,fraction);
     }
     await job.terminal.close();job.terminal=null;
     const tree=document.querySelector('colab-file-browser')?.currentTree;
@@ -102,7 +121,10 @@ async function run(target,download){
       if(job.cancelled)throw new Error('Cancelled.');
       await file.download({
         get canceled(){return job.cancelled;},
-        update:n=>setStatus(job,`Downloading ${Math.round(n*100)}%`,job.result.archive)
+        update:n=>{
+          const fraction=Number.isFinite(n)?Math.min(1,Math.max(0,n)):null;
+          setStatus(job,fraction!==null?`Downloading ${Math.round(fraction*100)}%`:'Downloading…',job.result.archive,false,fraction);
+        }
       });
       if(job.cancelled)throw new Error('Cancelled.');
     }
@@ -173,8 +195,8 @@ function capture(event){
   if(!event.isTrusted)return;
   const view=event.composedPath().find(node=>node?.localName==='colab-file-view');
   if(!view)return;
-  const path=folderPath(view);const file=view.getFile?.()||view.file;
-  selected=path?{path,name:file.name,view}:null;
+  const path=filePath(view);const file=view.getFile?.()||view.file;
+  selected=path&&(file.isDirectory||isExtractable(path))?{path,name:file.name,view,isDirectory:Boolean(file.isDirectory)}:null;
   if(!selected)document.querySelectorAll('[data-cfz-action]').forEach(item=>item.remove());
   setTimeout(addMenuItems,0);
 }
@@ -187,10 +209,21 @@ function addMenuItems(){
   const menus=[...document.querySelectorAll('[role="menu"][aria-label]')].filter(menu=>
     menu.getBoundingClientRect().width>0 && (menu.getAttribute('aria-label')||'').endsWith(': '+selected.name));
   for(const menu of menus){
-    const running=jobs.get(selected.path)?.kind==='zip';
-    for(const [action,label] of [['details','Folder details'],['zip','ZIP only'],['download','ZIP and download'],['cancel','Cancel ZIP'],['delete','Delete folder and contents…']]){
+    if(!menu.cfzKeyboardFocus){
+      menu.cfzKeyboardFocus=true;
+      // Keep Closure's menu open when keyboard focus enters an added action.
+      menu.addEventListener('blur',event=>{
+        const next=event.relatedTarget;
+        if(next?.closest?.('[data-cfz-action]')?.parentElement===menu)event.stopImmediatePropagation();
+      },true);
+    }
+    const running=jobs.get(selected.path)?.kind;
+    const actions=selected.isDirectory
+      ? [['details','Folder details'],['zip','ZIP only'],['download','ZIP and download'],...(running==='zip'?[['cancel','Cancel ZIP']]:[]),['delete','Delete folder and contents…']]
+      : [['extract','Extract here'],...(running==='extract'?[['cancel','Cancel extraction']]:[])];
+    for(const old of menu.querySelectorAll('[data-cfz-action]'))if(!actions.some(([action])=>action===old.dataset.cfzAction))old.remove();
+    for(const [action,label] of actions){
       let button=menu.querySelector(`[data-cfz-action="${action}"]`);
-      if(action==='cancel'&&!running){button?.remove();continue;}
       if(!button){
         button=document.createElement('div');button.dataset.cfzAction=action;
         button.setAttribute('role','menuitem');button.tabIndex=0;button.className='goog-menuitem';
@@ -209,6 +242,9 @@ function addMenuItems(){
         };
         button.addEventListener('pointerdown',keepMenuFocused);
         button.addEventListener('mousedown',keepMenuFocused);
+        button.addEventListener('blur',event=>{
+          if(!menu.contains(event.relatedTarget))menu.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',keyCode:27,which:27,bubbles:true}));
+        });
         const launch=event=>{
           if(!event.isTrusted || button.getAttribute('aria-disabled')==='true')return;
           event.preventDefault();event.stopPropagation();
@@ -219,6 +255,7 @@ function addMenuItems(){
             if(job){job.cancelled=true;setStatus(job,'Cancelling…');}
           }else if(action==='details')void runDetails(target);
           else if(action==='delete')void runDelete(target);
+          else if(action==='extract')void runExtract(target);
           else void run(target,action==='download');
         };
         button.addEventListener('click',launch);
@@ -226,15 +263,24 @@ function addMenuItems(){
         menu.append(button);
       }
       button.dataset.cfzPath=selected.path;button.cfzView=selected.view;
+      const content=button.querySelector('.goog-menuitem-content');if(content.textContent!==label)content.textContent=label;
       let reason='';
       if(action==='delete'){try{deletionPath(selected.path);}catch(error){reason=error.message;}}
-      const disabled=action!=='cancel' && (Boolean(reason)||conflictingJob(jobs,selected.path,action==='delete'?'delete':action==='details'?'details':'zip'));
-      button.title=reason || (disabled?'Wait for the current operation on this folder to finish.':'');
+      if(action==='extract'){try{extractionPath(selected.path);}catch(error){reason=error.message;}}
+      const disabled=action!=='cancel' && (Boolean(reason)||conflictingJob(jobs,selected.path,['delete','details','extract'].includes(action)?action:'zip'));
+      button.title=reason || (disabled?'Wait for the current operation in this location to finish.':action==='extract'?'Extract beside this archive. Existing files are never overwritten.':'');
       if(action==='delete')button.style.color=disabled?'':'#d93025';
       button.setAttribute('aria-disabled',String(disabled));button.classList.toggle('goog-menuitem-disabled',disabled);
     }
   }
 }
-const observer=new MutationObserver(addMenuItems);
+const observer=new MutationObserver(()=>{
+  addMenuItems();
+  // Colab replaces rows during refresh. Restore an active ring even while
+  // waiting for a backend request that is not producing progress callbacks.
+  for(const job of jobs.values())if(!job.finished&&job.status&&!job.badge?.isConnected){
+    const {label,detail,error,progress}=job.status;setStatus(job,label,detail,error,progress);
+  }
+});
 observer.observe(document.body,{childList:true,subtree:true});
 window.addEventListener('pagehide',()=>observer.disconnect(),{once:true});

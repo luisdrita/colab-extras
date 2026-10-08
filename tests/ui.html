@@ -8,14 +8,17 @@ body[data-theme="dark"]{color-scheme:dark;background:#131314;color:#e3e3e3;--col
 body[data-theme="dark"] aside,body[data-theme="dark"] .goog-menu{background:#282a2c;border-color:#444746}body[data-theme="dark"] colab-file-view:hover,body[data-theme="dark"] .goog-menuitem-highlight{background:#37393b}label{display:inline-block;margin-right:12px;margin-bottom:8px}
 @media(max-width:600px){body{margin:16px}h1{font-size:24px}aside{max-width:100%}select{max-width:100%}}
 </style>
-<p>This page loads the exact extension bundle with a fake runtime. Right-click a folder to exercise folder details, immediate ZIP actions, confirmed deletion, inline progress, and cancellation. The archive backend is tested separately on a real Colab VM.</p>
+<p>This page loads the exact extension bundle with a fake runtime. Right-click an archive for Extract here, or a folder for existing actions. Extraction preserves the archive and never overwrites existing files. Extraction backend tests run separately on local files; this page simulates the runtime.</p>
 <label>Scenario <select id="scenario"><option value="normal">Success</option><option value="slow">Slow compression / cancel</option><option value="error">Compression error</option><option value="blocked">Terminal unavailable</option><option value="download-error">Download error</option><option value="delete-error">Deletion permission error</option><option value="details-many">Details: ten long filenames</option><option value="details-empty">Details: empty folder</option><option value="details-partial">Details: unreadable contents</option><option value="details-error">Details: scan error</option><option value="details-slow">Details: slow scan / cancel</option></select></label>
 <label>Theme <select id="theme"><option value="light">Light</option><option value="dark">Colab dark</option></select></label>
+<button id="refresh-rows">Refresh file rows</button>
 <h2>Files</h2><aside>
 <colab-file-browser></colab-file-browser>
 <colab-file-view data-path="/content/results"><span>📁</span><span>results</span><button class="menu-button" aria-label="More actions for folder: results">⋮</button></colab-file-view>
 <colab-file-view data-path="/content/other-folder"><span>📁</span><span>other-folder</span><button class="menu-button" aria-label="More actions for folder: other-folder">⋮</button></colab-file-view>
 <colab-file-view data-path="/content"><span>📁</span><span>content (protected root)</span><button class="menu-button" aria-label="More actions for folder: content">⋮</button></colab-file-view>
+<colab-file-view data-path="/content/demo.zip" data-file="true"><span>📦</span><span>demo.zip</span><button class="menu-button" aria-label="More actions for file: demo.zip">⋮</button></colab-file-view>
+<colab-file-view data-path="/content/demo.tar.gz" data-file="true"><span>📦</span><span>demo.tar.gz</span><button class="menu-button" aria-label="More actions for file: demo.tar.gz">⋮</button></colab-file-view>
 <colab-file-view data-path="/content/notes.txt" data-file="true"><span>📄</span><span>notes.txt</span></colab-file-view>
 </aside><pre id="events" aria-label="Test events">Ready. No actual Colab connection or files.</pre>
 <script>
@@ -24,17 +27,29 @@ const events=document.getElementById('events');
 const log=text=>{events.textContent+='\n'+text;events.scrollTop=events.scrollHeight;};
 const state={runtime:{},job:null,ticks:0,cancelled:false,deleted:new Set()};
 const scenario=()=>document.getElementById('scenario').value;
+for(const [value,text] of [['extract-slow','Extraction / cancel'],['extract-error','Extraction conflict'],['extract-partial','Extraction partial error'],['saving','Saving ZIP / hold'],['download-slow','Downloading / hold'],['delete-slow','Deleting / hold'],['unknown','Unknown progress / hold']]){
+ const option=document.createElement('option');option.value=value;option.textContent=text;document.getElementById('scenario').append(option);
+}
 const response=(body,status=200)=>Promise.resolve(new Response(JSON.stringify(body),{status}));
 const kernel={runtime:state.runtime,runtimeProxy:{createSocket:path=>({
  connect:async()=>{log('Socket '+path);},stop:()=>log('Own terminal closed'),
- sendString:text=>{const [type,command]=JSON.parse(text);if(type!=='stdin')throw Error('Bad protocol');const args=command.match(/'([^']*)'/g).map(s=>s.slice(1,-1));state.job={path:args[1],dir:args[2],kind:args[0].endsWith('folder_details.py')?'details':args[0].endsWith('delete_folder.py')?'delete':'zip'};state.ticks=0;state.cancelled=false;log((state.job.kind==='details'?'Scan':state.job.kind==='delete'?'Deletion':'Compression')+' started for '+state.job.path);}
+ sendString:text=>{const [type,command]=JSON.parse(text);if(type!=='stdin')throw Error('Bad protocol');const args=command.match(/'([^']*)'/g).map(s=>s.slice(1,-1));state.job={path:args[1],dir:args[2],kind:args[0].endsWith('extract_archive.py')?'extract':args[0].endsWith('folder_details.py')?'details':args[0].endsWith('delete_folder.py')?'delete':'zip'};state.ticks=0;state.cancelled=false;log((state.job.kind==='extract'?'Extraction':state.job.kind==='details'?'Scan':state.job.kind==='delete'?'Deletion':'Compression')+' started for '+state.job.path);}
 })},getKernelXhr:()=>({fetch:async(path,opts)=>{
  if(path==='/api/terminals'&&opts.method==='POST')return scenario()==='blocked'?response({},403):response({name:'test-session'});
  if(opts.method==='DELETE'){log('Removed '+path);return response({});}
  if(opts.method==='PUT'){if(path.endsWith('/cancel'))state.cancelled=true;return response({});}
- if(path.startsWith('/api/contents/'))return response({type:'directory'});
+ if(path.startsWith('/api/contents/'))return response({type:/\.(zip|tar|gz|tgz)\?/.test(path)?'file':'directory'});
  if(path.startsWith('/files/')){
    state.ticks++;
+   if(state.job.kind==='extract'){
+     const result={path:state.job.path,destination:'/content',files:0,folders:0,done:0,total:100};
+     if(state.cancelled)return response({...result,state:'cancelled',error:'Extraction cancelled',partial:false});
+     if(scenario()==='extract-error')return response({...result,state:'error',error:'Already exists; nothing was overwritten: result.csv',partial:false});
+     if(scenario()==='extract-partial')return response({...result,state:'error',error:'Archive entry is truncated',partial:true,files:1});
+     if(scenario()==='extract-slow'||state.ticks<3)return response({...result,state:'extracting',done:Math.min(state.ticks*20,80)});
+     log('Extracted beside archive: '+state.job.path);
+     return response({...result,state:'extracted',files:3,folders:1,done:100});
+   }
    if(state.job.kind==='details'){
      if(state.cancelled){log('Folder scan cancelled');return response({state:'cancelled'});}
      if(scenario()==='details-error')return response({state:'error',error:'Permission denied: selected folder'});
@@ -48,20 +63,22 @@ const kernel={runtime:state.runtime,runtimeProxy:{createSocket:path=>({
    }
    if(state.job.kind==='delete'){
      if(scenario()==='delete-error')return response({state:'error',error:'Permission denied: protected.txt',partial:true});
-     if(state.ticks<3)return response({state:state.ticks===1?'checking':'deleting'});
+     if(scenario()==='delete-slow'||state.ticks<3)return response({state:state.ticks===1?'checking':'deleting'});
      state.deleted.add(state.job.path);
      log('Deleted folder: '+state.job.path);
      return response({state:'deleted',path:state.job.path});
    }
    if(state.cancelled)return response({state:'cancelled'});
    if(scenario()==='error')return response({state:'error',error:'File changed during compression: results.csv'});
-   if(scenario()==='slow'||state.ticks<3)return response({state:'compressing',done:state.ticks*12,total:100,files:state.ticks});
+   if(scenario()==='unknown')return response({state:'scanning',done:0,total:0,files:state.ticks});
+   if(scenario()==='saving')return response({state:'saving',done:65,total:100,files:3});
+   if(scenario()==='slow'||state.ticks<3)return response({state:'compressing',done:Math.min(state.ticks*12,72),total:100,files:state.ticks});
    return response({state:'ready',archive:state.job.path+'.zip',size:8192,files:3});
  }
  return response({},404);
 }})};
 window.colab={global:{notebook:{getKernel:()=>kernel}}};
-document.querySelector('colab-file-browser').currentTree={refresh:async()=>{for(const view of document.querySelectorAll('colab-file-view'))if(state.deleted.has(view.dataset.path))view.remove();log('Files sidebar refreshed');},files:{getFile:async path=>({download:async progress=>{if(scenario()==='download-error')throw Error('Download connection lost');progress.update(0.4);await new Promise(r=>setTimeout(r,200));if(progress.canceled)throw Error('Cancelled');progress.update(1);log('Download requested: '+path);}})}};
+document.querySelector('colab-file-browser').currentTree={refresh:async()=>{for(const view of document.querySelectorAll('colab-file-view'))if(state.deleted.has(view.dataset.path))view.remove();log('Files sidebar refreshed');},files:{getFile:async path=>({download:async progress=>{if(scenario()==='download-error')throw Error('Download connection lost');progress.update(0.4);while(scenario()==='download-slow'&&!progress.canceled)await new Promise(r=>setTimeout(r,200));await new Promise(r=>setTimeout(r,200));if(progress.canceled)throw Error('Cancelled');progress.update(1);log('Download requested: '+path);}})}};
 let closingMenu=false;
 function closeMenu(){
  if(closingMenu)return;
@@ -78,10 +95,20 @@ function openMenu(view,event){
  menu.tabIndex=0;menu.addEventListener('blur',closeMenu);
  menu.addEventListener('keydown',e=>{if(e.key==='Escape')closeMenu();});document.body.append(menu);menu.focus();
 }
-for(const view of document.querySelectorAll('colab-file-view')){
+function wireFolder(view){
  const row=document.createElement('div');row.className='file-title-row';row.append(...view.childNodes);view.append(row);
  view.file={path:view.dataset.path.replace(/^\//,''),name:view.dataset.path.split('/').pop(),isDirectory:!view.dataset.file};
  view.addEventListener('contextmenu',e=>openMenu(view,e));view.querySelector('button')?.addEventListener('click',e=>openMenu(view,e));
 }
+for(const view of document.querySelectorAll('colab-file-view'))wireFolder(view);
+document.getElementById('refresh-rows').addEventListener('click',()=>{
+ for(const view of document.querySelectorAll('colab-file-view')){
+  const fresh=document.createElement('colab-file-view');
+  for(const attr of view.attributes)fresh.setAttribute(attr.name,attr.value);
+  for(const child of view.querySelector('.file-title-row').children)if(!child.hasAttribute('data-cfz-status'))fresh.append(child.cloneNode(true));
+  view.replaceWith(fresh);wireFolder(fresh);
+ }
+ log('File rows replaced');
+});
 document.addEventListener('click',e=>{if(!e.target.closest('colab-file-view')&&!e.target.closest('[role="menu"]'))closeMenu();});
 </script><script src="../extension/colab-zip.js"></script></html>

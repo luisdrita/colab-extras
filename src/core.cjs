@@ -21,9 +21,29 @@ function deletionPath(value) {
   return path;
 }
 function conflictingJob(jobs, path, kind) {
+  const scope = (p, k) => k === 'extract' ? p.slice(0, p.lastIndexOf('/')) || '/' : p;
+  const overlaps = (a, b) => a === b || a === '/' || b === '/' || a.startsWith(b + '/') || b.startsWith(a + '/');
   return [...jobs.values()].some(job => job.path === path ||
-    ((kind === 'delete' || job.kind === 'delete') &&
-      (path.startsWith(job.path + '/') || job.path.startsWith(path + '/'))));
+    ((['delete', 'extract'].includes(kind) || ['delete', 'extract'].includes(job.kind)) &&
+      overlaps(scope(path, kind), scope(job.path, job.kind))));
+}
+const isExtractable = path => typeof path === 'string' && /\.(zip|tar|tar\.gz|tgz)$/i.test(path);
+function extractionPath(value) {
+  const path = normalizePath(value);
+  if (!isExtractable(path)) throw new Error('Choose a ZIP, TAR, TAR.GZ, or TGZ file.');
+  if (!path.startsWith('/content/') || path.split('/').some(p => p.startsWith('.colab-folder-zip-'))) {
+    throw new Error('Choose an archive inside /content or a mounted Drive folder.');
+  }
+  return path;
+}
+function validateExtraction(result, source) {
+  const count = n => Number.isSafeInteger(n) && n >= 0;
+  if (!result || result.path !== source || result.destination !== source.slice(0, source.lastIndexOf('/')) ||
+      !['checking', 'extracting', 'extracted'].includes(result.state) ||
+      !['files', 'folders', 'done', 'total'].every(key => count(result[key])) || result.done > result.total) {
+    throw new Error('Unexpected extraction result. Refresh Files before retrying.');
+  }
+  return result;
 }
 const encodePath = path => path.replace(/^\//, '').split('/').map(encodeURIComponent).join('/');
 const quote = text => "'" + text.replaceAll("'", "'\"'\"'") + "'";
@@ -105,4 +125,4 @@ function validateDetails(result, source) {
   return result;
 }
 // Exports are removed by build.py; the browser bundle keeps these functions private.
-module.exports = {normalizePath, deletionPath, conflictingJob, encodePath, quote, assertRuntime, request, put, openTerminal, validateArchive, formatBytes, validateDetails};
+module.exports = {normalizePath, deletionPath, conflictingJob, isExtractable, extractionPath, validateExtraction, encodePath, quote, assertRuntime, request, put, openTerminal, validateArchive, formatBytes, validateDetails};

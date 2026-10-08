@@ -17,7 +17,7 @@ function showDetailsDialog(job){
     h2{font:400 20px/28px var(--colab-google-sans-font-family,'Google Sans',Roboto,Arial,sans-serif);margin:0}h3{font-size:14px;font-weight:500;margin:24px 0 8px}
     button{font-family:inherit;font-size:14px;font-weight:500;line-height:20px;border:0;border-radius:4px;background:transparent;color:var(--accent);min-height:36px;padding:8px 16px;cursor:pointer}button:hover,summary:hover{background:var(--hover)}button:focus-visible,summary:focus-visible{outline:2px solid var(--colab-focus-ring-color,var(--accent));outline-offset:2px}
     header button{display:grid;place-items:center;min-height:32px;width:32px;padding:0;font:24px/1 Arial,sans-serif;color:var(--secondary);border-radius:50%}
-    .content{padding:20px 24px;overflow:auto;min-height:0}p{margin:0}.path{font:13px/20px var(--colab-code-font-family,monospace);overflow-wrap:anywhere;color:var(--secondary)}.status{margin-top:8px;font-size:12px;color:var(--secondary)}.muted{font-size:12px;color:var(--secondary)}.error{color:var(--colab-error-color,#b3261e)}.warning{margin-top:16px;padding:12px;border-radius:4px;background:var(--colab-warning-container-color,#fff2cc);color:var(--colab-on-warning-container-color,#5f4100);font-size:12px;overflow-wrap:anywhere}
+    .content{padding:20px 24px;overflow:auto;min-height:0}p{margin:0}.path{font:13px/20px var(--colab-code-font-family,monospace);overflow-wrap:anywhere;color:var(--secondary)}.status-row{display:flex;align-items:center;gap:8px;margin-top:8px}.status{font-size:12px;color:var(--secondary)}#scan-progress{display:inline-flex}.muted{font-size:12px;color:var(--secondary)}.error{color:var(--colab-error-color,#b3261e)}.warning{margin-top:16px;padding:12px;border-radius:4px;background:var(--colab-warning-container-color,#fff2cc);color:var(--colab-on-warning-container-color,#5f4100);font-size:12px;overflow-wrap:anywhere}
     dl{margin:20px 0 0;padding-bottom:16px;border-bottom:1px solid var(--divider)}dl>div{display:grid;grid-template-columns:160px minmax(0,1fr);gap:16px;padding:6px 0}dt{color:var(--secondary)}dd{margin:0;font-variant-numeric:tabular-nums}#size{font-weight:500}#exact{display:block;font-size:12px;font-weight:400;color:var(--secondary);overflow-wrap:anywhere}
     table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:13px}th{text-align:left;color:var(--secondary);font-size:12px;font-weight:400}td,th{padding:8px 0;border-bottom:1px solid var(--divider)}td:first-child{overflow-wrap:anywhere;padding-right:16px}td:last-child,th:last-child{width:96px;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}tbody tr:last-child td{border-bottom:0}
     details{margin-top:16px;font-size:12px;color:var(--secondary)}summary{width:fit-content;padding:4px 0;cursor:pointer;border-radius:2px}#notes{margin-top:8px}footer{display:flex;justify-content:flex-end;padding:8px 16px;border-top:1px solid var(--divider);flex-shrink:0}[hidden]{display:none!important}
@@ -27,7 +27,7 @@ function showDetailsDialog(job){
   const sizeMetric=node('div',{},node('dt',{},'Total file size'),node('dd',{},node('span',{id:'size'}),node('span',{id:'exact'})));
   const dialog=node('dialog',{'aria-labelledby':'title','aria-describedby':'folder-path'},
     node('header',{},node('h2',{id:'title'},'Folder details'),node('button',{id:'close','aria-label':'Close folder details'},'×')),
-    node('div',{class:'content'},node('p',{class:'path',id:'folder-path'}),node('p',{class:'status',id:'status',role:'status','aria-live':'polite'},'Scanning folder…'),
+    node('div',{class:'content'},node('p',{class:'path',id:'folder-path'}),node('div',{class:'status-row'},node('span',{id:'scan-progress'}),node('p',{class:'status',id:'status',role:'status','aria-live':'polite'},'Scanning folder…')),
     node('div',{id:'result',hidden:''},node('div',{id:'warning',class:'warning',hidden:''}),
       node('dl',{},sizeMetric,metric('Files','files'),metric('Subfolders','folders'),metric('Symbolic links','links')),
       node('h3',{},'Largest files'),node('p',{id:'empty',class:'muted',hidden:''},'No regular files found.'),
@@ -35,23 +35,27 @@ function showDetailsDialog(job){
       node('details',{},node('summary',{},'About this scan'),node('p',{id:'notes'})))),node('footer',{},node('button',{id:'done'},'Cancel scan')));
   shadow.append(style,dialog);
   const get=id=>shadow.getElementById(id);
+  const progress=createProgress('Scanning folder…');get('scan-progress').append(progress.element);
   get('folder-path').textContent=job.path;
   const previous=job.view?.querySelector('.menu-button')||document.activeElement;
   const view={closed:false,settled:false,close(){
     if(view.closed)return;
     view.closed=true;
-    if(!view.settled)job.cancelled=true;
+    if(!view.settled){job.cancelled=true;setStatus(job,'Cancelling scan…');}
     dialog.close();host.remove();
     if(detailsDialog===view)detailsDialog=null;
     if(previous?.isConnected)previous.focus?.();
   },progress(result){
     if(view.closed)return;
     get('status').textContent=`Scanning… ${result.files.toLocaleString()} files · ${result.folders.toLocaleString()} subfolders found`;
+    progress.update(get('status').textContent);
   },error(message){
     view.settled=true;if(view.closed)return;
+    get('scan-progress').hidden=true;progress.element.remove();
     get('status').textContent=message;get('status').classList.add('error');get('done').textContent='Close';
   },render(result){
     view.settled=true;if(view.closed)return;
+    get('scan-progress').hidden=true;progress.element.remove();
     get('status').textContent=result.skipped?'Scan finished with unreadable or changed items.':'Scan complete';
     get('result').hidden=false;get('done').textContent='Close';
     get('size').textContent=formatBytes(result.bytes);get('exact').textContent=result.bytes.toLocaleString()+' bytes';

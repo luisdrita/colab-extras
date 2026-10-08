@@ -1,16 +1,18 @@
 # Colab Extras — Privacy policy
 
-Effective 26 September 2026 · Extension version 0.6.2
+Effective 8 October 2026 · Extension version 0.8.0
 
-Colab Extras adds folder inspection, ZIP creation, ZIP download, and confirmed folder deletion to Google Colab. It does not send your folders, files, or notebook contents to the extension's developer or to an external compression service.
+Colab Extras adds folder inspection, ZIP creation, ZIP download, archive extraction, and confirmed folder deletion to Google Colab. It does not send your folders, files, or notebook contents to the extension's developer or to an external compression service.
 
 ## Information used by the extension
 
-The extension reads folder names and paths from Colab's Files sidebar when you open a folder menu. When you select an action, it handles the information needed for that action: the selected path, file and folder metadata, file sizes, operation progress, and errors. Folder details displays counts and relative paths for the largest files.
+The extension reads file and folder names and paths from Colab's Files sidebar when you open a file or folder menu. When you select an action, it handles the information needed for that action: the selected path, file and folder metadata, file sizes, operation progress, and errors. Folder details displays counts and relative paths for the largest files.
 
 ZIP creation reads the selected folder's contents inside your connected Colab runtime. ZIP and download transfers the resulting archive to your browser through Colab's existing file-download connection. Deletion removes the selected folder and its contents only after a confirmation naming the path. It is permanent and bypasses Trash, including on mounted drives.
 
 The extension does not collect browsing history from other websites, read notebook cell contents for analytics, record keystrokes, collect passwords, or maintain an advertising or usage profile. It has no extension account, analytics service, advertising, telemetry, or payment processing.
+
+Extract here reads the selected archive inside the runtime and writes its regular files and directories beside it. It retains the original archive and never overwrites existing files. Completed extracted files and directories can remain after cancellation or failure; they remain until you remove them or the runtime storage is reset.
 
 ## Where processing happens
 
@@ -26,11 +28,11 @@ The developer does not receive or retain a copy of this operation data. Chrome W
 
 ## Data use and sharing
 
-Data handling is limited to providing the folder actions you request. Colab Extras does not sell user data, transfer it for unrelated purposes, use it for advertising, or use it to assess creditworthiness or lending eligibility. Its handling of data follows the Chrome Web Store User Data Policy, including the Limited Use requirements.
+Data handling is limited to providing the file and folder actions you request. Colab Extras does not sell user data, transfer it for unrelated purposes, use it for advertising, or use it to assess creditworthiness or lending eligibility. Its handling of data follows the Chrome Web Store User Data Policy, including the Limited Use requirements.
 
 ## Your choices
 
-You control which folder and action to select. You can cancel an active scan or ZIP operation, subject to completion of an in-progress filesystem request. Deletion cannot be cancelled after confirmation. You can disable or uninstall the extension through Chrome. Uninstalling does not erase archives, downloaded files, or staging files already created in your runtime.
+You control which file or folder and action to select. You can cancel an active scan, ZIP, or extraction operation, subject to completion of an in-progress filesystem request. Deletion cannot be cancelled after confirmation. You can disable or uninstall the extension through Chrome. Uninstalling does not erase archives, downloaded files, or staging files already created in your runtime.
 
 ## Contact and changes
 

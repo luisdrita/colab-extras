@@ -1,0 +1,13 @@
+Colab Extras 0.8.0 — Extract here
+
+Adds Extract here to ZIP, TAR, TAR.GZ and TGZ file menus in Colab. Archive contents are extracted into the archive's current directory, retaining the original archive. No destination picker or extra enclosing folder is added.
+
+Existing files are never overwritten: detected conflicts stop extraction during preflight. Unsafe paths, links, special files and encrypted ZIPs are rejected. Extraction includes progress, cancellation and partial-result reporting. This release also includes the circular progress indicators from the earlier local 0.7.0 build.
+
+No new extension permissions or runtime dependencies. The existing requirement for a compatible hosted Colab runtime with independent Jupyter terminal access remains.
+
+Validation: 60 Python tests and 24 JavaScript tests passed. The generated bundle and ZIP were verified against the readable source. Live ZIP extraction and existing-file conflict handling passed using the installed 0.8.0 extension on a hosted Colab Pro+ CPU runtime, without adding or running notebook cells. Mounted Drive, free-tier runtimes and other archive formats have not received this live check.
+
+Install locally: unzip colab-extras-0.8.0.zip, enable Developer mode at chrome://extensions, then Load unpacked or drag the extracted folder onto that page. Disable any older duplicate copy and refresh Colab.
+
+Chrome Web Store submission is pending. Publishing this GitHub release does not update the Store listing.

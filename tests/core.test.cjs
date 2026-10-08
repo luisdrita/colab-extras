@@ -2,6 +2,29 @@ const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const {execFileSync}=require('node:child_process');
 const {normalizePath,deletionPath,conflictingJob,encodePath,quote,request,put,openTerminal,validateArchive,formatBytes,validateDetails}=require('../src/core.cjs');
+const {isExtractable,extractionPath,validateExtraction}=require('../src/core.cjs');
+test('extract here accepts only supported archive paths inside content',()=>{
+  for(const name of ['a.zip','a.ZIP','a.tar','a.tar.gz','a.tgz']){
+    assert.ok(isExtractable(name));assert.equal(extractionPath('/content/'+name),'/content/'+name);
+  }
+  for(const path of ['/content/a.rar','/content/a.gz','/tmp/a.zip','/content/../a.zip','/content/.colab-folder-zip-id/a.zip'])assert.throws(()=>extractionPath(path));
+  assert.equal(isExtractable('/content/a.zip.txt'),false);
+  assert.equal(extractionPath('/content/drive/MyDrive/a.zip'),'/content/drive/MyDrive/a.zip');
+});
+test('extraction locks the destination and blocks conflicting jobs in both directions',()=>{
+  const jobs=new Map([['x',{kind:'extract',path:'/content/results/input.zip'}]]);
+  for(const kind of ['zip','delete','details','extract']){
+    for(const path of ['/content/results/other.zip','/content/results/sub/a.zip',kind==='extract'?'/content/input.zip':'/content'])assert.ok(conflictingJob(jobs,path,kind));
+    assert.equal(conflictingJob(jobs,'/content/unrelated/input.zip',kind),false);
+  }
+  assert.ok(conflictingJob(new Map([['x',{kind:'zip',path:'/content/results'}]]),'/content/results/data.zip','extract'));
+  assert.ok(conflictingJob(new Map([['x',{kind:'extract',path:'/content/a.zip'}]]),'/content/sub/b.zip','extract'));
+});
+test('extraction result is tied to the selected archive and its parent',()=>{
+  const result={state:'extracted',path:'/content/a.zip',destination:'/content',files:2,folders:1,done:12,total:12};
+  assert.equal(validateExtraction(result,result.path),result);
+  for(const patch of [{destination:'/tmp'},{path:'/content/b.zip'},{files:-1},{folders:0.2},{done:13},{total:NaN},{state:'ready'}])assert.throws(()=>validateExtraction({...result,...patch},result.path));
+});
 function setup(fail=false){
   const calls=[];
   const runtime={};
