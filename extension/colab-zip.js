@@ -227,6 +227,7 @@ function setStatus(job,label,detail=label,error=false,progress=null){
 function finishStatus(job,label,detail,error=false){
   job.finished=true;
   setStatus(job,label,detail,error);
+  addMenuItems();
   if(!error)setTimeout(()=>{if(job.badge?.dataset.cfzJob===job.id)job.badge.remove();},10000);
 }
 async function cleanup(job){
@@ -258,6 +259,7 @@ async function run(target,download){
     await put(ctx,job.dir+'/recovery.py',recoverySource);
     if(job.cancelled)throw new Error('Cancelled.');
     job.terminal.send(`python3 -B ${quote(job.dir+'/archive.py')} ${quote(path)} ${quote(job.dir)} --undo\n`);
+    job.started=true;
     let misses=0,cancelSent=false;
     while(true){
       await sleep(750);
@@ -321,9 +323,16 @@ async function run(target,download){
     await job.terminal?.close();
     // Completed jobs are safe to clean. A lost connection can leave a
     // process alive, so retain incomplete staging files for diagnosis.
-    if(job.result||job.settled)await cleanup(job);
+    if(job.result||job.settled||(job.created&&!job.started))await cleanup(job);
     jobs.delete(path);addMenuItems();
   }
+}
+function cancelJob(path){
+  const job=jobs.get(path);
+  // Cleanup keeps the operation lock, but a completed result must not
+  // accept a stale Cancel click or replace its final status.
+  if(!job||job.finished)return;
+  job.cancelled=true;setStatus(job,'Cancelling…');
 }
 function capture(event){
   if(!event.isTrusted)return;
@@ -351,7 +360,8 @@ function addMenuItems(){
         if(next?.closest?.('[data-cfz-action]')?.parentElement===menu)event.stopImmediatePropagation();
       },true);
     }
-    const running=jobs.get(selected.path)?.kind;
+    const currentJob=jobs.get(selected.path);
+    const running=currentJob?.finished?null:currentJob?.kind;
     const actions=selected.isDirectory
       ? [['details','Folder details'],['zip','ZIP only'],['download','ZIP and download'],...(running==='zip'?[['cancel','Cancel ZIP']]:[]),['delete','Delete folder and contents…']]
       : [...(isExtractable(selected.path)?[['extract','Extract here']]:[]),...(running==='extract'?[['cancel','Cancel extraction']]:[])];
@@ -387,8 +397,7 @@ function addMenuItems(){
           const target={path:button.dataset.cfzPath,view:button.cfzView};
           menu.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',keyCode:27,which:27,bubbles:true}));
           if(action==='cancel'){
-            const job=jobs.get(target.path);
-            if(job){job.cancelled=true;setStatus(job,'Cancelling…');}
+            cancelJob(target.path);
           }else if(action==='details')void runDetails(target);
           else if(action==='delete')void runRecoverableDelete(target);
           else if(['rename','move','copy','newfolder'].includes(action))void runFileAction(target,action);

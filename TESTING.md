@@ -1,20 +1,36 @@
-# Version 0.9.0 release candidate — 20 October 2026
+# Version 0.9.0 — 20 October 2026
 
 ## Completed verification
 
 - 93 Python tests pass. New recovery tests cover deleted trees and metadata, generated ZIP identity/hash checks, extraction and overwrite restoration, cancellation after an extracted file, later edits, replaced files, occupied destinations, symlink parents, native rename/move/copy, cross-filesystem move fallback, new folders, binary uploads, and chunked replacement.
-- 42 JavaScript tests pass. New checks cover native mutation interception, internal-request bypass, Colab's complete upload-call boundary, explicit final chunk handling, upload cancellation, empty uploads, runtime reconnection, sidebar navigation, protected paths, optional download permissions, tracked download associations, and rejecting webpage/untracked local-file deletion requests.
+- 44 JavaScript tests pass. New checks cover native mutation interception, internal-request bypass, Colab's complete upload-call boundary, explicit final chunk handling, upload cancellation, empty uploads, runtime reconnection, sidebar navigation, protected paths, optional download permissions, tracked download associations, and rejecting webpage/untracked local-file deletion requests.
 - Generated JavaScript syntax, Python 3.8 grammar, manifest shape, ZIP integrity, and packaged-file equality are checked.
 - The exact generated bundle was exercised in the local browser harness for the backwards-arrow toolbar control, history listing, undo result, previous sidebar location, settings reversal, and dark theme. The harness connection and file results are simulated; Python worker tests use disposable local fixtures.
 - Colab's public frontend source currently served at build `7a710b5d9351e60bafbe4ea199eb8f8f` was inspected to verify `files.rootPath`, the shared kernel XHR, and the full `files.write` call. Its upload implementation sends numbered chunks without a final -1 marker, so the extension wraps the full write call and supplies an explicit completion boundary to its worker.
 
-## Release gates still open
+## Live installed-extension verification
 
-Live validation of version 0.9.0 in an installed extension on a hosted Colab runtime is pending. Browser security policy blocked automated access to `chrome://extensions`; a manual load/reload is required. Optional Chrome download permission and live downloaded-file cancellation/removal also need an installed-extension check. Mounted Drive, free-tier/local/enterprise runtimes, and large datasets are not claimed as live-verified.
+Version 0.9.0 was manually installed in Chrome and exercised on a hosted Colab Pro+ CPU runtime on 20 October 2026 using a disposable notebook and synthetic fixtures.
 
-The Chrome Web Store developer dashboard returned `Not allowed` during this session. No package upload, review submission, or Store publication has been confirmed for 0.9.0. GitHub candidate publication is a separate step.
+- The backwards-arrow button appeared beside Refresh and loaded the runtime recovery history.
+- Native upload, file rename, folder creation, and replacement were recorded and undone. A freshly reopened file preview confirmed exact restoration of the original contents after replacement.
+- ZIP only selected a numbered destination without replacing the uploaded source ZIP; Undo removed the generated archive while retaining the source.
+- Extraction created nested files and an empty directory. Undo removed those outputs and retained the archive. Opt-in overwrite extraction restored the retained original.
+- After editing an overwritten file, selective extraction Undo preserved that later edit, reported its conflict, and removed only the unchanged new file. Reversing the later saves and retrying recovery restored the original exact contents.
+- Extension copy created a numbered tree, move changed its full path, and recoverable deletion retained it. Undo restored the deleted tree, reversed the move, and removed the unchanged copy in sequence.
+- Native folder Open followed by Previous sidebar location returned to `/content`. A preference change was reversed through Undo. The test-only overwrite preference was restored to off; the user's requested download tracking remains enabled.
 
-The release remains a candidate until live checks pass. Do not treat the local simulator or unit-test totals as proof of installed behaviour.
+Colab can retain stale file previews after external filesystem changes; content verification above used closed and freshly reopened previews.
+
+The live cancellation check exposed a stale Cancel action during post-completion cleanup. The final build removes that action as soon as the result is finished and ignores stale clicks. It also cleans staging after cancellation before the ZIP worker starts. Both boundaries have regression tests; live confirmation after reloading this final build is pending.
+
+## Publication and remaining validation
+
+The Chrome Web Store developer dashboard returned `Not allowed` during this session. No package upload, review submission, or Store publication has been confirmed for 0.9.0. GitHub publication is tracked separately.
+
+Optional managed-download integration is pending: the first live attempt reported missing Chrome permission, retained the runtime ZIP, and kept it available in Undo.
+
+Mounted Drive, free-tier/local/enterprise runtimes, large datasets, and mid-operation cancellation are not claimed as live-verified. Applicable automated tests cover cancellation and recovery boundaries; those results do not establish every live platform or timing case.
 
 ## Live smoke test
 
