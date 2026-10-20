@@ -6,6 +6,13 @@ status = job / 'status.json'
 archive = job / (source.name + '.zip')
 partial = job / 'archive.partial'
 started = time.monotonic()
+recovery = None
+if '--undo' in sys.argv:
+    from recovery import Store, Journal, verified_copy
+    recovery_store = Store()
+    recovery_lock = recovery_store.locked()
+    recovery_lock.__enter__()
+    recovery = Journal(recovery_store, 'Create ZIP: ' + source.name)
 
 def report(**data):
     data['elapsed'] = round(time.monotonic() - started, 1)
@@ -30,6 +37,35 @@ def publish_archive(staged):
         check_cancelled()
         suffix = '' if index == 0 else ' (' + str(index) + ')'
         destination = source.parent / (source.name + suffix + '.zip')
+        if recovery:
+            # Journal the exact completed archive before publication. Atomic
+            # rename avoids exposing a partly copied ZIP on mounted filesystems.
+            bucket = recovery.bucket(destination)
+            expected = recovery_store.fingerprint(staged)
+            change = {'kind': 'write', 'path': str(destination), 'after': expected,
+                      'bucket': str(bucket), 'published': False}
+            recovery.data['changes'].append(change)
+            recovery.save()
+            try:
+                try:
+                    recovery_store.move(staged, destination, expected)
+                except OSError as error:
+                    if error.errno != errno.EXDEV:
+                        raise
+                    copied = bucket / ('zip-' + str(index))
+                    expected = verified_copy(recovery_store, staged, copied, expected)
+                    change['after'] = expected
+                    recovery.save()
+                    check_cancelled()
+                    recovery_store.move(copied, destination, expected)
+            except FileExistsError:
+                recovery.data['changes'].pop()
+                recovery.save()
+                index += 1
+                continue
+            change['published'] = True
+            recovery.save()
+            return destination
         try:
             # Same filesystem: publish the completed archive atomically.
             os.link(staged, destination)
@@ -145,12 +181,21 @@ try:
                 count += 1
     os.replace(partial, archive)
     saved = publish_archive(archive)
+    if recovery:
+        recovery.finish()
     archive.unlink(missing_ok=True)
-    report(state='ready', archive=str(saved), size=saved.stat().st_size, done=done, total=total, files=count)
+    report(state='ready', archive=str(saved), size=saved.stat().st_size, done=done, total=total, files=count,
+           undo=recovery.id if recovery else None)
 except BaseException as exc:
     try: partial.unlink(missing_ok=True)
     except OSError: pass
+    try: archive.unlink(missing_ok=True)
+    except OSError: pass
+    if recovery:
+        recovery_store.undo(recovery.id)
     report(state='cancelled' if isinstance(exc, InterruptedError) else 'error', error=str(exc))
 finally:
     try: (job / 'pid').unlink(missing_ok=True)
     except OSError: pass
+    if recovery:
+        recovery_lock.__exit__(None, None, None)

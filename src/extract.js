@@ -1,7 +1,7 @@
 async function runExtract(target){
   let path;
   try{path=extractionPath(target.path);}catch(error){setStatus(target,'Extraction failed',error.message,true);return;}
-  if(conflictingJob(jobs,path,'extract'))return;
+  if(jobs.size||undoBusy)return;
   const id=crypto.randomUUID();
   const job={kind:'extract',path,view:target.view,id,dir:'/content/.colab-folder-zip-'+id,cancelled:false,terminal:null};
   jobs.set(path,job);setStatus(job,'Checking archive…');addMenuItems();
@@ -13,8 +13,9 @@ async function runExtract(target){
     job.terminal=await openTerminal(ctx);
     await request(ctx,'/api/contents/'+encodePath(job.dir),'PUT',{type:'directory'});job.created=true;
     await put(ctx,job.dir+'/extract_archive.py',extractSource);
+    await put(ctx,job.dir+'/recovery.py',recoverySource);
     if(job.cancelled)throw new Error('Cancelled.');
-    job.terminal.send(`python3 ${quote(job.dir+'/extract_archive.py')} ${quote(path)} ${quote(job.dir)}\n`);
+    job.terminal.send(`python3 -B ${quote(job.dir+'/extract_archive.py')} ${quote(path)} ${quote(job.dir)} --undo${undoPreferences.overwrite?' --overwrite':''}\n`);
     job.started=true;
     let misses=0,cancelSent=false;
     while(true){
@@ -45,7 +46,7 @@ async function runExtract(target){
   }catch(error){
     const cancelled=job.backendCancelled||(!job.started&&job.cancelled);
     let detail=error.message||'The connection to Colab was lost.';
-    if(job.partial)detail+=' Some extracted files or folders remain. Existing files were not overwritten.';
+    if(job.partial)detail+=' Later changes were preserved. Open Undo to review remaining conflicts.';
     else if(job.started&&!job.settled)detail+=' Refresh Files to check for partially extracted contents before retrying.';
     if(job.settled)try{await document.querySelector('colab-file-browser')?.currentTree?.refresh?.();}catch{}
     finishStatus(job,cancelled?'Extraction cancelled':'Extraction failed',detail,!cancelled||job.partial);

@@ -13,6 +13,8 @@ body[data-theme="dark"] aside,body[data-theme="dark"] .goog-menu{background:#282
 <label>Theme <select id="theme"><option value="light">Light</option><option value="dark">Colab dark</option></select></label>
 <button id="refresh-rows">Refresh file rows</button>
 <h2>Files</h2><aside>
+<div class="file-tree-buttons"><button class="file-tree-refresh" aria-label="Refresh">↻</button></div>
+<button id="navigate-demo">Open results location</button>
 <colab-file-browser></colab-file-browser>
 <colab-file-view data-path="/content/results"><span>📁</span><span>results</span><button class="menu-button" aria-label="More actions for folder: results">⋮</button></colab-file-view>
 <colab-file-view data-path="/content/other-folder"><span>📁</span><span>other-folder</span><button class="menu-button" aria-label="More actions for folder: other-folder">⋮</button></colab-file-view>
@@ -26,6 +28,14 @@ document.getElementById('theme').addEventListener('change',event=>{document.body
 const events=document.getElementById('events');
 const log=text=>{events.textContent+='\n'+text;events.scrollTop=events.scrollHeight;};
 const state={runtime:{},job:null,ticks:0,cancelled:false,deleted:new Set()};
+const recoveryArgs=new Map();
+const recoveryHistory=[{id:crypto.randomUUID(),label:'Create ZIP: results (simulated)',time:Date.now()/1000,state:'ready'}];
+customElements.define('md-icon-button',class extends HTMLElement{
+ connectedCallback(){this.tabIndex=0;this.setAttribute('role','button');this.setAttribute('aria-label',this.getAttribute('data-aria-label')||this.title);this.style.cssText='display:inline-flex;vertical-align:middle;align-items:center;justify-content:center;width:36px;height:36px;border-radius:50%;cursor:pointer';this.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();this.click();}});}
+});
+customElements.define('md-icon',class extends HTMLElement{
+ connectedCallback(){if(this.textContent==='refresh'){this.textContent='↻';this.style.display='inline-block';this.style.fontSize='26px';}}
+});
 const scenario=()=>document.getElementById('scenario').value;
 for(const [value,text] of [['extract-slow','Extraction / cancel'],['extract-error','Extraction conflict'],['extract-partial','Extraction partial error'],['saving','Saving ZIP / hold'],['download-slow','Downloading / hold'],['delete-slow','Deleting / hold'],['unknown','Unknown progress / hold']]){
  const option=document.createElement('option');option.value=value;option.textContent=text;document.getElementById('scenario').append(option);
@@ -33,14 +43,24 @@ for(const [value,text] of [['extract-slow','Extraction / cancel'],['extract-erro
 const response=(body,status=200)=>Promise.resolve(new Response(JSON.stringify(body),{status}));
 const kernel={runtime:state.runtime,runtimeProxy:{createSocket:path=>({
  connect:async()=>{log('Socket '+path);},stop:()=>log('Own terminal closed'),
- sendString:text=>{const [type,command]=JSON.parse(text);if(type!=='stdin')throw Error('Bad protocol');const args=command.match(/'([^']*)'/g).map(s=>s.slice(1,-1));state.job={path:args[1],dir:args[2],kind:args[0].endsWith('extract_archive.py')?'extract':args[0].endsWith('folder_details.py')?'details':args[0].endsWith('delete_folder.py')?'delete':'zip'};state.ticks=0;state.cancelled=false;log((state.job.kind==='extract'?'Extraction':state.job.kind==='details'?'Scan':state.job.kind==='delete'?'Deletion':'Compression')+' started for '+state.job.path);}
+ sendString:text=>{const [type,command]=JSON.parse(text);if(type!=='stdin')throw Error('Bad protocol');const args=command.match(/'([^']*)'/g).map(s=>s.slice(1,-1));state.job={path:args[1],dir:args[2],kind:args[0].endsWith('recovery.py')?'recovery':args[0].endsWith('extract_archive.py')?'extract':args[0].endsWith('folder_details.py')?'details':args[0].endsWith('delete_folder.py')?'delete':'zip'};state.ticks=0;state.cancelled=false;log('Started '+state.job.kind+' for '+state.job.path);}
 })},getKernelXhr:()=>({fetch:async(path,opts)=>{
  if(path==='/api/terminals'&&opts.method==='POST')return scenario()==='blocked'?response({},403):response({name:'test-session'});
  if(opts.method==='DELETE'){log('Removed '+path);return response({});}
- if(opts.method==='PUT'){if(path.endsWith('/cancel'))state.cancelled=true;return response({});}
+ if(opts.method==='PUT'){if(path.endsWith('/cancel'))state.cancelled=true;if(path.endsWith('/args.json'))recoveryArgs.set('/'+decodeURIComponent(path.slice('/api/contents/'.length)),JSON.parse(JSON.parse(opts.body).content));return response({});}
  if(path.startsWith('/api/contents/'))return response({type:/\.(zip|tar|gz|tgz)\?/.test(path)?'file':'directory'});
  if(path.startsWith('/files/')){
    state.ticks++;
+   if(state.job.kind==='recovery'){
+     const args=recoveryArgs.get(state.job.path);
+     if(args.action==='list')return response({ok:true,records:recoveryHistory});
+     if(args.action==='undo'){
+       const index=recoveryHistory.findIndex(r=>r.id===args.id);if(index>=0)recoveryHistory.splice(index,1);
+       return response({ok:true,id:args.id,state:'undone',conflicts:[]});
+     }
+     const record={id:crypto.randomUUID(),label:args.label,time:Date.now()/1000,state:'ready'};
+     recoveryHistory.push(record);return response({ok:true,...record,path:args.path});
+   }
    if(state.job.kind==='extract'){
      const result={path:state.job.path,destination:'/content',files:0,folders:0,done:0,total:100};
      if(state.cancelled)return response({...result,state:'cancelled',error:'Extraction cancelled',partial:false});
@@ -78,8 +98,14 @@ const kernel={runtime:state.runtime,runtimeProxy:{createSocket:path=>({
  return response({},404);
 }})};
 window.colab={global:{notebook:{getKernel:()=>kernel}}};
+const stableXhr=kernel.getKernelXhr();kernel.getKernelXhr=()=>stableXhr;
 document.querySelector('colab-file-browser').currentTree={refresh:async()=>{for(const view of document.querySelectorAll('colab-file-view'))if(state.deleted.has(view.dataset.path))view.remove();log('Files sidebar refreshed');},files:{getFile:async path=>({download:async progress=>{if(scenario()==='download-error')throw Error('Download connection lost');progress.update(0.4);while(scenario()==='download-slow'&&!progress.canceled)await new Promise(r=>setTimeout(r,200));await new Promise(r=>setTimeout(r,200));if(progress.canceled)throw Error('Cancelled');progress.update(1);log('Download requested: '+path);}})}};
 let closingMenu=false;
+const demoFiles=document.querySelector('colab-file-browser').currentTree.files;
+demoFiles.rootPath='content';demoFiles.write=async()=>{};
+const downloadFile=demoFiles.getFile;
+demoFiles.getFile=async path=>({...await downloadFile(path),isDirectory:true,path});
+document.getElementById('navigate-demo').addEventListener('click',()=>{demoFiles.rootPath='content/results';log('Sidebar location: content/results');});
 function closeMenu(){
  if(closingMenu)return;
  closingMenu=true;

@@ -1,0 +1,11 @@
+Colab Extras 0.9.0 release candidate — Undo and recovery
+
+Adds a backwards-arrow Undo button beside Refresh in the Files sidebar. It opens recoverable file history, previous sidebar location, and reversible extension settings.
+
+Recovery covers generated ZIPs, extraction, optional overwrites, recoverable folder deletion, rename/move/copy, folder creation, uploads, and replacements inside /content while tracking is active. Cancellation attempts rollback; later changes are preserved as conflicts. Native file operations are integrated with the current Colab file API.
+
+Optional browser-download management tracks the extension's own download IDs separately. Its popup can cancel downloads or confirm permanent removal of a completed local copy. The downloads permission is optional; storage is used for tracked-download metadata.
+
+Recovery data consumes storage. Runtime deletion loses the local journal and backups; no persistent cross-runtime recovery is promised. Retained Drive data can outlive its runtime journal. Undo does not cover arbitrary notebook/terminal code, other users, or earlier untracked actions.
+
+Validation: 93 Python tests and 42 JavaScript tests; syntax and package checks; local browser UI simulation. Live installed-extension validation is pending a manual Chrome load/reload. This is a prerelease, not a claim of Chrome Web Store publication.

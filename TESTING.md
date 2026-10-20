@@ -1,3 +1,27 @@
+# Version 0.9.0 release candidate — 20 October 2026
+
+## Completed verification
+
+- 93 Python tests pass. New recovery tests cover deleted trees and metadata, generated ZIP identity/hash checks, extraction and overwrite restoration, cancellation after an extracted file, later edits, replaced files, occupied destinations, symlink parents, native rename/move/copy, cross-filesystem move fallback, new folders, binary uploads, and chunked replacement.
+- 42 JavaScript tests pass. New checks cover native mutation interception, internal-request bypass, Colab's complete upload-call boundary, explicit final chunk handling, upload cancellation, empty uploads, runtime reconnection, sidebar navigation, protected paths, optional download permissions, tracked download associations, and rejecting webpage/untracked local-file deletion requests.
+- Generated JavaScript syntax, Python 3.8 grammar, manifest shape, ZIP integrity, and packaged-file equality are checked.
+- The exact generated bundle was exercised in the local browser harness for the backwards-arrow toolbar control, history listing, undo result, previous sidebar location, settings reversal, and dark theme. The harness connection and file results are simulated; Python worker tests use disposable local fixtures.
+- Colab's public frontend source currently served at build `7a710b5d9351e60bafbe4ea199eb8f8f` was inspected to verify `files.rootPath`, the shared kernel XHR, and the full `files.write` call. Its upload implementation sends numbered chunks without a final -1 marker, so the extension wraps the full write call and supplies an explicit completion boundary to its worker.
+
+## Release gates still open
+
+Live validation of version 0.9.0 in an installed extension on a hosted Colab runtime is pending. Browser security policy blocked automated access to `chrome://extensions`; a manual load/reload is required. Optional Chrome download permission and live downloaded-file cancellation/removal also need an installed-extension check. Mounted Drive, free-tier/local/enterprise runtimes, and large datasets are not claimed as live-verified.
+
+The Chrome Web Store developer dashboard returned `Not allowed` during this session. No package upload, review submission, or Store publication has been confirmed for 0.9.0. GitHub candidate publication is a separate step.
+
+The release remains a candidate until live checks pass. Do not treat the local simulator or unit-test totals as proof of installed behaviour.
+
+## Live smoke test
+
+Use a disposable notebook/runtime. Confirm the extension marker says 0.9.0 and only one Colab Extras copy is enabled. Test the mirrored Refresh icon; native new folder and rename; upload and replacement; ZIP plus Undo; extraction plus Undo; opt-in replacement extraction; recoverable folder deletion; copy/move plus Undo; navigation back; settings undo; and preservation of a file changed after an operation. Verify the original notebook cell count and execution state remain unchanged. Grant optional downloads permission manually if testing that feature, then verify the popup manages only its own tracked download.
+
+---
+
 # Version 0.8.0 verification — 8 October 2026
 
 - 60 Python tests pass, including 22 extraction tests covering ZIP/TAR/TAR.GZ/TGZ, nested/Unicode/hidden/empty files, preserving the source archive, existing-file conflicts, directory merging, traversal, links, special files, cancellation, corrupt ZIP data, insufficient space and a concurrent file-creation race.

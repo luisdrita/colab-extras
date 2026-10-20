@@ -2,71 +2,65 @@
 
 # Colab Extras
 
-File and folder tools integrated into Google Colab's design and workflow. Colab Extras extends the Files sidebar with familiar right-click menus, dialogs that follow Colab's light and dark themes, and circular progress indicators. Right-click a folder to inspect it, ZIP it, download it, or delete it after confirmation. Right-click a supported archive to extract its contents beside it.
+File tools for Google Colab, with a backwards-arrow **Undo** button beside **Refresh** in the Files sidebar. Inspect folders, create and download ZIPs, extract archives, and recover supported file changes.
 
-**Version 0.8.0 · Chrome 120+ · Independent extension, not affiliated with Google.**
+**Version 0.9.0 release candidate · Chrome 120+ · Independent extension, not affiliated with Google.**
 
-| Action | What it does |
+[Download the 0.9.0 candidate](https://github.com/luisdrita/colab-extras/releases/tag/v0.9.0-rc.1). Live installed-extension verification is pending.
+
+![Undo panel in the simulated browser harness](docs/undo-preview-dark.png)
+
+*Preview uses simulated file results; it is not evidence of a live Colab operation.*
+
+The [Chrome Web Store](https://chromewebstore.google.com/detail/colab-extras/aeghdoedemnfdoagpopjdbopnlphaaad) may still offer an earlier version. Upload, review, and publication are separate stages. See [verification status](TESTING.md) before using a candidate build on important data.
+
+## Undo coverage
+
+| Action | Recovery behaviour |
 | --- | --- |
-| Folder details | Shows total file size, file and subfolder counts, symbolic links, and the 10 largest files. |
-| ZIP only | Saves a ZIP beside the selected folder, preserving existing archives with numbered filenames. |
-| ZIP and download | Creates the ZIP and starts its download. |
-| Extract here | Unpacks ZIP, TAR, TAR.GZ, or TGZ files into the archive’s current directory, keeping the archive and preserving existing files. |
-| Delete folder and contents | Permanently removes the selected folder after confirming its exact path. |
+| ZIP only | Removes the generated archive from its visible location after verifying its identity, metadata, and SHA-256 content hash. |
+| ZIP and download | Runtime ZIP recovery plus separately tracked optional browser-download cancellation/removal in the extension popup. |
+| Extract here | Removes unchanged extracted files and empty created folders. If replacement is enabled, restores retained originals. |
+| Delete folder and contents | Moves the selected tree into recovery storage before reporting success; Undo restores it without overwriting a newly occupied path. |
+| Rename / move | Restores the original path if both locations are safe. Cross-filesystem moves verify a copy and retain the source before publication. |
+| Copy / create folder | Removes unchanged copies or empty created folders; later changes remain. |
+| Upload / replace file | Retains original files; complete upload calls are tracked, including Colab's numbered chunks. |
+| Cancellation | Attempts rollback of completed ZIP/extraction/upload changes. Conflicts and runtime loss can prevent full recovery. |
+| Extension settings | Reverses preferences changed in the current tab. |
+| Sidebar navigation | Returns to a previously visited sidebar location without changing Python's working directory. |
 
-ZIP actions start immediately. A Colab-style loading circle appears beside the folder during scanning, compression, saving, downloading, and deletion. It shows percentage progress when available, follows the page theme, and disappears on completion, cancellation, or failure. Right-click again to cancel an active ZIP. Folder details also shows a loading circle while scanning.
+Open **Undo** to choose a recoverable operation. Later edits and replaced files are preserved and reported as conflicts. Selective recovery may therefore be partial. A file operation and a sidebar location change have separate controls.
 
-![Folder details dialog with labelled example data](docs/folder-details.png)
+The extension adds **Rename with Undo**, **Move with Undo**, **Copy with Undo**, and **New folder with Undo** menu actions. It also intercepts supported native Files sidebar mutations inside `/content` while active. The current integration uses Colab's internal file interfaces, which may change. Arbitrary notebook code, terminal commands, other users, operations before tracking began, and paths outside `/content` are not covered.
 
-## Install in Chrome
+## Recovery storage
 
-The published extension is available in the [Chrome Web Store](https://chromewebstore.google.com/detail/colab-extras/aeghdoedemnfdoagpopjdbopnlphaaad). Download version 0.8.0 for local installation from [GitHub Releases](https://github.com/luisdrita/colab-extras/releases/tag/v0.8.0). Chrome Web Store submission and approval are separate; the Store can offer an earlier version.
+Recovery is scoped to the runtime. Journals live in `/content/.colab-folder-zip-undo`; retained originals, staged data, and removed outputs live in hidden `.colab-folder-zip-recovery-*` folders on the affected filesystem. They continue to use disk space and are not automatically expired in this release. Undo removes generated output from its original location by quarantining it rather than permanently destroying it.
 
-To test this build locally:
+Deleting the runtime loses its local journal and local backups. Drive copies may survive, but without the runtime journal they are not automatically recoverable through this version. Deleting recovery folders invalidates their history. Previously deleted files without a retained copy cannot be recovered retroactively. Filesystem changes from active writers can cause conflicts; pause those writers before recovery.
 
-1. Use the supplied unpacked `colab-extras-0.8.0` folder, or extract the supplied version 0.8.0 ZIP into a permanent folder.
-2. Open `chrome://extensions` and enable **Developer mode**.
-3. Click **Load unpacked** and select the extracted folder containing `manifest.json`, or drag that entire folder onto the Extensions page.
-4. Refresh Colab, connect a compatible hosted runtime, and open the **Files** sidebar.
-5. Right-click an archive and choose **Extract here**, or right-click a folder for the existing actions.
+## Extraction
 
-If you clone this repository, load its `extension/` folder instead. After updating, reload the extension in Chrome and refresh your Colab tab. Do not enable duplicate copies.
+Right-click a ZIP, TAR, TAR.GZ, or TGZ and choose **Extract here**. Files are extracted beside the archive, which is retained. Existing files are preserved by default. To allow replacement, enable the setting in **Undo**; originals are retained first.
 
-## Runtime requirements
+Archive traversal paths, links, special files, encrypted ZIPs, sparse TAR entries, and archives over 100,000 entries are rejected. Extracted files do not inherit executable permissions or ownership from the archive. Cancellation and failures attempt rollback, preserving later changes.
 
-Requires Chrome 120+, a connected hosted Colab runtime with Python 3.8+, and access to independent Jupyter terminals. Terminal availability may depend on your Colab plan and runtime configuration. Free-tier compatibility has not been verified.
+## Optional download management
 
-Operations run in a separate process on the **same Colab virtual machine**. They use its CPU, memory, and disk, without adding or queueing a notebook cell. Compression finishes before the archive is downloaded. No setup cell, API key, external compression service, or extension account is required.
+Normal Colab downloads do not require an additional permission. For tracked downloads:
 
-Keep the Colab tab and runtime connected. ZIP creation needs sufficient free space and a writable parent folder. Colab may buffer a downloaded archive in the browser; multi-gigabyte downloads have not been validated. Files changing during an operation can cause errors or inconsistent results; this is not a filesystem snapshot. Unsupported terminal access produces an error without running a notebook cell.
+1. Open the extension popup and enable optional download management, granting Chrome's downloads permission.
+2. Enable tracking in the sidebar Undo settings.
+3. Use **ZIP and download**. Its operation and browser-download IDs are recorded separately.
+4. Use the extension popup to cancel the tracked download or confirm permanent removal of its completed local copy.
 
-## Extract here
+Existing untracked downloads and copies moved or made outside the browser cannot be reliably recalled. Runtime Undo does not automatically delete a local file. Large browser downloads may require substantial memory.
 
-Right-click a `.zip`, `.tar`, `.tar.gz`, or `.tgz` file in the Files sidebar and choose **Extract here**. Contents are written into the directory containing the archive, preserving the archive's internal folders. No extra enclosing folder or destination picker is added. The original archive is kept.
+## Install and develop
 
-The complete member list and existing paths are checked before extraction. Existing directories may be reused, but if any file would be overwritten, extraction stops before writing anything. Rename or move the conflicting file yourself before retrying. The extension rejects absolute/traversal paths, symbolic links, hard links, device files, sparse TAR entries, encrypted ZIP files, and archives with more than 100,000 entries. Extraction does not restore executable bits or ownership from an archive.
+Load the `extension/` directory as an unpacked extension in Chrome Developer mode. Disable other copies while testing, then refresh Colab. A connected hosted runtime with Python 3.8+ and independent Jupyter terminal access is required. Unsupported terminal access fails without executing a notebook cell. Runtime CPU, memory, and disk are used by the operations.
 
-Progress appears beside the archive; right-click again for **Cancel extraction**. An interrupted or corrupt archive can leave successfully extracted files and created directories. The incomplete file being written is removed when the worker can handle the error. Errors explain when partial contents may remain. Runtime loss can prevent cleanup, so inspect Files before retrying. Extraction requires a writable destination, enough free space, and a regular archive under `/content` (including mounted Drive folders); paths through symbolic-link parents are rejected.
-
-## Deletion and scanning
-
-**Deletion is permanent and bypasses Trash, including on mounted drives. There is no undo.** Use it only after checking the confirmed path. Deletion cannot be cancelled after confirmation and may be partial if permissions or connectivity fail.
-
-Deletion is limited to subfolders of `/content`. Runtime roots, standard Drive roots, mount points, staging folders, and paths reached through symbolic-link parents are protected. Symbolic links inside the selected folder are removed as links, without deleting their targets. Stop other processes writing to a folder before deleting it.
-
-Folder details reads metadata, includes hidden files and empty folders, and counts symbolic links without traversing their targets. Size means logical regular-file bytes, not allocated disk space; hard-linked paths count separately. Special files and extension staging folders are excluded. Unreadable or changing entries are reported as incomplete totals.
-
-Version 0.8.0 ZIP extraction and existing-file conflict handling have been checked through the installed extension on a hosted Colab Pro+ CPU runtime. Mounted-Drive operations, free-tier runtimes, and other archive formats still need live verification. Colab's internal page and terminal interfaces can change. See [Testing](TESTING.md) for the verified scope.
-
-## Privacy
-
-The extension runs only on `https://colab.research.google.com/*` and uses Colab's existing authenticated runtime connection. It has no ads, analytics, telemetry, credential store, or developer-operated file service. Files and operation data are not sent to the developer. Completed jobs clean up their staging files when possible; disconnections can leave temporary files. ZIPs and downloads remain until you remove them.
-
-Read the [privacy policy](PRIVACY.md). A copy is included in the extension popup.
-
-## Develop and test
-
-No npm packages are required. Use Python 3.8+ and Node.js 20+:
+No npm dependencies are needed. Build and test with:
 
 ```sh
 python3 build.py
@@ -75,10 +69,10 @@ node --test tests/*.test.cjs
 node --check extension/colab-zip.js
 ```
 
-`extension/colab-zip.js` is generated from the readable JavaScript and bundled Python in `src/`. Rebuild it after changing source files.
+`extension/colab-zip.js` is generated from `src/`. For the simulated browser harness, serve the repository with `python3 -m http.server 8765 --bind 127.0.0.1`, then open `http://127.0.0.1:8765/tests/ui.html`. This is a simulated runtime, not live Colab validation.
 
-For the local browser harness, run `python3 -m http.server 8765 --bind 127.0.0.1` from the repository root, then open `http://127.0.0.1:8765/tests/ui.html`. Its connection and file data are simulated; it does not operate on a real Colab runtime.
+## Privacy and feedback
 
-## Feedback
+No analytics, ads, developer-operated file service, or extension account. File contents and recovery data stay in the user's browser, runtime, and selected mounted filesystem. Read the [privacy policy](PRIVACY.md).
 
-[Open an issue](https://github.com/luisdrita/colab-extras/issues) with the extension version, Colab runtime type, action, and error message. Remove private paths, notebook contents, credentials, and other confidential data before posting.
+[Report an issue](https://github.com/luisdrita/colab-extras/issues) with the version, action, runtime type, and error. Remove confidential paths, file contents, and credentials before posting.

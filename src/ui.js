@@ -1,7 +1,7 @@
-// ZIP actions are immediate. Permanent deletion requires an exact-path confirmation.
+// File mutations retain runtime-local recovery data.
 if (document.querySelector('meta[name="colab-folder-zip-version"]')) return;
 const marker=document.createElement('meta');
-marker.name='colab-folder-zip-version';marker.content='0.8.0';document.head.append(marker);
+marker.name='colab-folder-zip-version';marker.content='0.9.0';document.head.append(marker);
 const jobs=new Map();
 let selected=null;
 function context(){
@@ -62,7 +62,7 @@ function finishStatus(job,label,detail,error=false){
 async function cleanup(job){
   if(!job.created)return;
   // Only job staging files are removed. The saved sibling ZIP is retained.
-  const names=['archive.py','extract_archive.py','delete_folder.py','folder_details.py','status.json','status.tmp','pid','cancel','archive.partial'];
+  const names=['archive.py','extract_archive.py','delete_folder.py','folder_details.py','recovery.py','status.json','status.tmp','pid','cancel','archive.partial'];
   if(job.kind==='zip')names.push(job.path.split('/').pop()+'.zip');
   for(const name of names){
     try{await request(job.ctx,'/api/contents/'+encodePath(job.dir+'/'+name),'DELETE');}
@@ -72,8 +72,8 @@ async function cleanup(job){
 }
 async function run(target,download){
   let path;
-  try{path=normalizePath(target.path);}catch(error){setStatus(target,'ZIP failed',error.message,true);return;}
-  if(conflictingJob(jobs,path,'zip'))return;
+  try{path=deletionPath(target.path);}catch(error){setStatus(target,'ZIP failed',error.message,true);return;}
+  if(jobs.size||undoBusy)return;
   const id=crypto.randomUUID();
   const job={kind:'zip',path,view:target.view,id,dir:'/content/.colab-folder-zip-'+id,cancelled:false,terminal:null};
   jobs.set(path,job);setStatus(job,'Zipping…');addMenuItems();
@@ -85,8 +85,9 @@ async function run(target,download){
     job.terminal=await openTerminal(ctx);
     await request(ctx,'/api/contents/'+encodePath(job.dir),'PUT',{type:'directory'});job.created=true;
     await put(ctx,job.dir+'/archive.py',archiveSource);
+    await put(ctx,job.dir+'/recovery.py',recoverySource);
     if(job.cancelled)throw new Error('Cancelled.');
-    job.terminal.send(`python3 ${quote(job.dir+'/archive.py')} ${quote(path)} ${quote(job.dir)}\n`);
+    job.terminal.send(`python3 -B ${quote(job.dir+'/archive.py')} ${quote(path)} ${quote(job.dir)} --undo\n`);
     let misses=0,cancelSent=false;
     while(true){
       await sleep(750);
@@ -99,9 +100,9 @@ async function run(target,download){
         throw error;
       }
       const result=await response.json();
-      if(result.state==='error')throw new Error(result.error||'Compression failed.');
-      if(result.state==='cancelled')throw new Error('Cancelled.');
-      if(result.state==='ready'){validateArchive(result,path);job.result=result;break;}
+      if(result.state==='error'){job.settled=true;throw new Error(result.error||'Compression failed.');}
+      if(result.state==='cancelled'){job.settled=true;throw new Error('Cancelled.');}
+      if(result.state==='ready'){validateArchive(result,path);job.result=result;job.settled=true;break;}
       if(!['scanning','compressing','saving'].includes(result.state))throw new Error('Unexpected compression status.');
       const label=result.state==='saving'?'Saving ZIP':'Zipping';
       const fraction=Number.isFinite(result.done)&&Number.isFinite(result.total)&&result.total>0?Math.min(1,Math.max(0,result.done/result.total)):null;
@@ -113,81 +114,44 @@ async function run(target,download){
     try{await tree?.refresh?.();}catch{}
     if(job.cancelled)throw new Error('Cancelled.');
     if(download){
-      const files=document.querySelector('colab-file-browser')?.currentTree?.files;
-      if(!files?.getFile)throw new Error('ZIP saved, but Colab file download is unavailable.');
-      setStatus(job,'Downloading…',job.result.archive);
-      const file=await files.getFile(job.result.archive);
-      assertRuntime(ctx);
-      if(job.cancelled)throw new Error('Cancelled.');
-      await file.download({
-        get canceled(){return job.cancelled;},
-        update:n=>{
-          const fraction=Number.isFinite(n)?Math.min(1,Math.max(0,n)):null;
-          setStatus(job,fraction!==null?`Downloading ${Math.round(fraction*100)}%`:'Downloading…',job.result.archive,false,fraction);
-        }
-      });
+      if(undoPreferences.managedDownloads){
+        setStatus(job,'Starting tracked download…',job.result.archive);
+        await managedDownload(job);
+      }else{
+        const files=document.querySelector('colab-file-browser')?.currentTree?.files;
+        if(!files?.getFile)throw new Error('ZIP saved, but Colab file download is unavailable.');
+        setStatus(job,'Downloading…',job.result.archive);
+        const file=await files.getFile(job.result.archive);
+        assertRuntime(ctx);
+        if(job.cancelled)throw new Error('Cancelled.');
+        await file.download({
+          get canceled(){return job.cancelled;},
+          update:n=>{
+            const fraction=Number.isFinite(n)?Math.min(1,Math.max(0,n)):null;
+            setStatus(job,fraction!==null?`Downloading ${Math.round(fraction*100)}%`:'Downloading…',job.result.archive,false,fraction);
+          }
+        });
+      }
       if(job.cancelled)throw new Error('Cancelled.');
     }
     finishStatus(job,download?'Download started':'ZIP ready','Saved '+job.result.archive);
   }catch(error){
-    const suffix=job.result?' ZIP remains at '+job.result.archive+'.':'';
+    let rollbackDetail='';
+    if(job.cancelled&&job.result?.undo){
+      try{
+        const recovered=await recoveryCall({action:'undo',id:job.result.undo},job.ctx);
+        if(recovered.conflicts.length)rollbackDetail=' Later changes were preserved; review this action in Undo.';
+        else job.result=null;
+      }catch(rollbackError){rollbackDetail=' Recovery could not finish: '+rollbackError.message;}
+    }
+    const suffix=job.result?' ZIP remains at '+job.result.archive+'. Use Undo to remove it.':'';
     const label=job.cancelled?'ZIP cancelled':job.result&&download?'Download failed':'ZIP failed';
-    finishStatus(job,label,(error.message||'The connection to Colab was lost.')+suffix,!job.cancelled);
+    finishStatus(job,label,(error.message||'The connection to Colab was lost.')+suffix+rollbackDetail,!job.cancelled||Boolean(rollbackDetail));
   }finally{
     await job.terminal?.close();
     // Completed jobs are safe to clean. A lost connection can leave a
     // process alive, so retain incomplete staging files for diagnosis.
-    if(job.result)await cleanup(job);
-    jobs.delete(path);addMenuItems();
-  }
-}
-async function runDelete(target){
-  let path,ctx;
-  try{path=deletionPath(target.path);ctx=context();}
-  catch(error){setStatus(target,'Delete failed',error.message,true);return;}
-  if(conflictingJob(jobs,path,'delete'))return;
-  if(!window.confirm(`Permanently delete this folder and all its contents?\n\n${path}\n\nAll nested files and folders will be removed. This includes files on mounted drives. Nothing is moved to Trash. This cannot be undone.`))return;
-  const id=crypto.randomUUID();
-  const job={kind:'delete',path,view:target.view,id,ctx,dir:'/content/.colab-folder-zip-'+id,terminal:null};
-  jobs.set(path,job);setStatus(job,'Deleting…');addMenuItems();
-  try{
-    const folder=await (await request(ctx,'/api/contents/'+encodePath(path)+'?content=0')).json();
-    if(folder.type!=='directory')throw new Error('The selected path is not a folder.');
-    job.terminal=await openTerminal(ctx);
-    await request(ctx,'/api/contents/'+encodePath(job.dir),'PUT',{type:'directory'});job.created=true;
-    await put(ctx,job.dir+'/delete_folder.py',deleteSource);
-    job.terminal.send(`python3 ${quote(job.dir+'/delete_folder.py')} ${quote(path)} ${quote(job.dir)}\n`);
-    let misses=0;
-    while(true){
-      await sleep(750);
-      let response;
-      try{response=await request(ctx,'/files/'+encodePath(job.dir+'/status.json')+'?t='+Date.now());}
-      catch(error){
-        if(error.status===404 && ++misses<30)continue;
-        if(error.status===404)throw new Error('The deletion process did not report a result. Refresh Files before retrying.');
-        throw error;
-      }
-      const result=await response.json();
-      if(result.state==='error'){
-        job.settled=true;
-        throw new Error((result.error||'Deletion failed.')+(result.partial?' Some contents may already have been deleted.':''));
-      }
-      if(result.state==='deleted'){
-        if(result.path!==path)throw new Error('Unexpected deletion result. Refresh Files to check the folder.');
-        job.settled=true;break;
-      }
-      if(!['checking','deleting'].includes(result.state))throw new Error('Unexpected deletion status.');
-      setStatus(job,result.state==='checking'?'Checking folder…':'Deleting…');
-    }
-    await job.terminal.close();job.terminal=null;
-    finishStatus(job,'Folder deleted',path);
-    const tree=document.querySelector('colab-file-browser')?.currentTree;
-    try{await tree?.refresh?.();}catch{finishStatus(job,'Folder deleted','Refresh Files to update the folder list.');}
-  }catch(error){
-    finishStatus(job,'Delete failed',error.message||'Connection lost. Refresh Files to check whether deletion completed.',true);
-  }finally{
-    await job.terminal?.close();
-    if(job.settled)await cleanup(job);
+    if(job.result||job.settled)await cleanup(job);
     jobs.delete(path);addMenuItems();
   }
 }
@@ -196,7 +160,7 @@ function capture(event){
   const view=event.composedPath().find(node=>node?.localName==='colab-file-view');
   if(!view)return;
   const path=filePath(view);const file=view.getFile?.()||view.file;
-  selected=path&&(file.isDirectory||isExtractable(path))?{path,name:file.name,view,isDirectory:Boolean(file.isDirectory)}:null;
+  selected=path?{path,name:file.name,view,isDirectory:Boolean(file.isDirectory)}:null;
   if(!selected)document.querySelectorAll('[data-cfz-action]').forEach(item=>item.remove());
   setTimeout(addMenuItems,0);
 }
@@ -220,7 +184,9 @@ function addMenuItems(){
     const running=jobs.get(selected.path)?.kind;
     const actions=selected.isDirectory
       ? [['details','Folder details'],['zip','ZIP only'],['download','ZIP and download'],...(running==='zip'?[['cancel','Cancel ZIP']]:[]),['delete','Delete folder and contents…']]
-      : [['extract','Extract here'],...(running==='extract'?[['cancel','Cancel extraction']]:[])];
+      : [...(isExtractable(selected.path)?[['extract','Extract here']]:[]),...(running==='extract'?[['cancel','Cancel extraction']]:[])];
+    actions.push(['rename','Rename with Undo…'],['move','Move with Undo…'],['copy','Copy with Undo…']);
+    if(selected.isDirectory)actions.push(['newfolder','New folder with Undo…']);
     for(const old of menu.querySelectorAll('[data-cfz-action]'))if(!actions.some(([action])=>action===old.dataset.cfzAction))old.remove();
     for(const [action,label] of actions){
       let button=menu.querySelector(`[data-cfz-action="${action}"]`);
@@ -254,7 +220,8 @@ function addMenuItems(){
             const job=jobs.get(target.path);
             if(job){job.cancelled=true;setStatus(job,'Cancelling…');}
           }else if(action==='details')void runDetails(target);
-          else if(action==='delete')void runDelete(target);
+          else if(action==='delete')void runRecoverableDelete(target);
+          else if(['rename','move','copy','newfolder'].includes(action))void runFileAction(target,action);
           else if(action==='extract')void runExtract(target);
           else void run(target,action==='download');
         };
@@ -267,8 +234,8 @@ function addMenuItems(){
       let reason='';
       if(action==='delete'){try{deletionPath(selected.path);}catch(error){reason=error.message;}}
       if(action==='extract'){try{extractionPath(selected.path);}catch(error){reason=error.message;}}
-      const disabled=action!=='cancel' && (Boolean(reason)||conflictingJob(jobs,selected.path,['delete','details','extract'].includes(action)?action:'zip'));
-      button.title=reason || (disabled?'Wait for the current operation in this location to finish.':action==='extract'?'Extract beside this archive. Existing files are never overwritten.':'');
+      const disabled=action!=='cancel' && (Boolean(reason)||jobs.size>0||undoBusy);
+      button.title=reason || (disabled?'Wait for the current operation in this location to finish.':action==='extract'?'Extract beside this archive. Replacement follows your Undo settings.':'');
       if(action==='delete')button.style.color=disabled?'':'#d93025';
       button.setAttribute('aria-disabled',String(disabled));button.classList.toggle('goog-menuitem-disabled',disabled);
     }
