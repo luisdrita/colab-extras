@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Colab Extras",
   "short_name": "Colab Extras",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "description": "Google Colab file tools with Undo: inspect, ZIP, extract, recover deleted files, rename, move, copy, and revisit sidebar paths.",
   "minimum_chrome_version": "120",
   "icons": {

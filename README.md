@@ -4,11 +4,11 @@
 
 File tools for Google Colab, with a backwards-arrow **Undo** button beside **Refresh** in the Files sidebar. Inspect folders, create and download ZIPs, extract archives, and recover supported file changes.
 
-**Version 0.9.1 · Chrome 120+ · Independent extension, not affiliated with Google.**
+**Version 0.9.2 · Chrome 120+ · Independent extension, not affiliated with Google.**
 
-[Download version 0.9.1](https://github.com/luisdrita/colab-extras/releases/tag/v0.9.1). All 147 automated tests and browser checks of one-click Undo passed. Hosted Colab recovery checks passed on 0.9.0; see the [verification record](TESTING.md) for the exact coverage and remaining live checks.
+[Download version 0.9.2](https://github.com/luisdrita/colab-extras/releases/tag/v0.9.2). All 160 automated tests and browser checks of one-click Undo passed. Hosted Colab recovery checks passed on 0.9.0; see the [verification record](TESTING.md) for the exact coverage and remaining live checks.
 
-![One-click Undo in the simulated browser harness](docs/one-click-undo-preview.png)
+![Disabled Undo and ordinary file menu in the simulated browser harness](docs/sidebar-undo-0.9.2.png)
 
 *Preview uses simulated file results; it is not evidence of a live Colab operation.*
 
@@ -27,13 +27,14 @@ The [Chrome Web Store](https://chromewebstore.google.com/detail/colab-extras/aeg
 | Upload / replace file | Retains original files; complete upload calls are tracked, including Colab's numbered chunks. |
 | Cancellation | Attempts rollback of completed ZIP/extraction/upload changes. Conflicts and runtime loss can prevent full recovery. |
 | Extension settings | Reverses preferences changed in the current tab. |
+| Folder opening/closing | Reverses the latest expansion or collapse, restoring previously expanded subfolders. |
 | Sidebar navigation | Returns to a previously visited sidebar location without changing Python's working directory. |
 
-Click **Undo** beside Refresh to immediately reverse the most recent supported action: a file change, sidebar path change, or extension setting change. Each click handles one action without opening a dialog. If the latest action has a conflict, recovery preserves later edits and stops there; it does not silently skip to an older action. A short message appears in the sidebar.
+Click **Undo** beside Refresh to immediately reverse the most recent supported action: a file change, sidebar path change, folder opening or closing, or extension setting change. Each click handles one action without opening a dialog. If the latest action has a conflict, recovery preserves later edits and stops there; it does not silently skip to an older action. A short message appears in the sidebar.
 
-For selective recovery or preferences, right-click a file or folder and choose **History and settings…**.
+The button is grey and disabled when there is nothing to undo. Opening and closing folder rows joins the same action history; undoing a close also restores previously expanded subfolders. Undo controls are not added to right-click menus. Preferences are available in the Chrome extension popup.
 
-The extension adds **Rename with Undo**, **Move with Undo**, **Copy with Undo**, and **New folder with Undo** menu actions. It also intercepts supported native Files sidebar mutations inside `/content` while active. The current integration uses Colab's internal file interfaces, which may change. Arbitrary notebook code, terminal commands, other users, operations before tracking began, and paths outside `/content` are not covered.
+The extension adds ordinary **Move…** and **Copy…** file actions. Native Colab rename and new-folder controls remain available. It also intercepts supported native Files sidebar mutations inside `/content` while active. The current integration uses Colab's internal file interfaces, which may change. Arbitrary notebook code, terminal commands, other users, operations before tracking began, and paths outside `/content` are not covered.
 
 ## Recovery storage
 
@@ -43,7 +44,7 @@ Deleting the runtime loses its local journal and local backups. Drive copies may
 
 ## Extraction
 
-Right-click a ZIP, TAR, TAR.GZ, or TGZ and choose **Extract here**. Files are extracted beside the archive, which is retained. Existing files are preserved by default. To allow replacement, enable the setting in **History and settings…**; originals are retained first.
+Right-click a ZIP, TAR, TAR.GZ, or TGZ and choose **Extract here**. Files are extracted beside the archive, which is retained. Existing files are preserved by default. To allow replacement, enable the setting in the **Chrome extension popup**; originals are retained first.
 
 Archive traversal paths, links, special files, encrypted ZIPs, sparse TAR entries, and archives over 100,000 entries are rejected. Extracted files do not inherit executable permissions or ownership from the archive. Cancellation and failures attempt rollback, preserving later changes.
 
@@ -52,7 +53,7 @@ Archive traversal paths, links, special files, encrypted ZIPs, sparse TAR entrie
 Normal Colab downloads do not require an additional permission. For tracked downloads:
 
 1. Open the extension popup and enable optional download management, granting Chrome's downloads permission.
-2. Right-click a file or folder, choose **History and settings…**, and enable tracking.
+2. Enable tracking in the same extension popup.
 3. Use **ZIP and download**. Its operation and browser-download IDs are recorded separately.
 4. Use the extension popup to cancel the tracked download or confirm permanent removal of its completed local copy.
 

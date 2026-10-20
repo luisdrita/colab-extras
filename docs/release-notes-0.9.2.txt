@@ -1,0 +1,11 @@
+Colab Extras 0.9.2 — Simple sidebar Undo
+
+The backwards-arrow toolbar button is the sole Undo control. Each click reverses the latest supported action without a dialog. The icon is grey and disabled when there is nothing to undo.
+
+Folder opening and closing now join the same history as file operations, sidebar paths, and preferences. Undoing a folder close restores previously expanded subfolders. Refreshes and Undo itself do not create extra folder actions.
+
+Removed Undo/history context-menu commands and duplicate rename/new-folder variants. Move and Copy remain normal file actions. Extraction and download-tracking preferences are available in the Chrome extension popup.
+
+Validation: 67 JavaScript tests and the unchanged 93-test Python recovery suite. Chrome harness checks exercise actual generated UI code with a simulated runtime; installed hosted Colab and popup-to-tab integration still require a manual reload. See TESTING.md for coverage and limits.
+
+Chrome Web Store submission remains manual because automated dashboard access is blocked. This release does not claim Store publication.
