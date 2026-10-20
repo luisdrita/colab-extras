@@ -1,6 +1,6 @@
 # Colab Extras — Privacy policy
 
-Effective 20 October 2026 · Extension version 0.9.4
+Effective 20 October 2026 · Extension version 0.9.5
 
 Colab Extras provides file tools and Undo in Google Colab. It does not send your files, notebook contents, recovery copies, or operation history to the developer or an external file-processing service.
 

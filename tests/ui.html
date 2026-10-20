@@ -37,7 +37,7 @@ customElements.define('md-icon',class extends HTMLElement{
  connectedCallback(){if(this.textContent==='refresh'){this.textContent='↻';this.style.display='inline-block';this.style.fontSize='26px';}}
 });
 const scenario=()=>document.getElementById('scenario').value;
-for(const [value,text] of [['extract-slow','Extraction / cancel'],['extract-error','Extraction conflict'],['extract-partial','Extraction partial error'],['saving','Saving ZIP / hold'],['download-slow','Downloading / hold'],['delete-slow','Deleting / hold'],['unknown','Unknown progress / hold']]){
+for(const [value,text] of [['extract-slow','Extraction / cancel'],['extract-error','Extraction conflict'],['extract-partial','Extraction partial error'],['saving','Saving ZIP / hold'],['download-slow','Downloading / hold'],['delete-slow','Deleting / hold'],['unknown','Unknown progress / hold'],['undo-slow','Undo / hold'],['undo-error','Undo error']]){
  const option=document.createElement('option');option.value=value;option.textContent=text;document.getElementById('scenario').append(option);
 }
 const response=(body,status=200)=>Promise.resolve(new Response(JSON.stringify(body),{status}));
@@ -55,6 +55,8 @@ const kernel={runtime:state.runtime,runtimeProxy:{createSocket:path=>({
      const args=recoveryArgs.get(state.job.path);
      if(args.action==='list')return response({ok:true,records:recoveryHistory,server_time:Date.now()/1000});
      if(args.action==='undo'){
+       if(scenario()==='undo-slow')return response({ok:true,running:true});
+       if(scenario()==='undo-error')return response({ok:false,error:'Recovery unavailable (simulated).'});
        const index=recoveryHistory.findIndex(r=>r.id===args.id);if(index>=0)recoveryHistory.splice(index,1);
        return response({ok:true,id:args.id,state:'undone',conflicts:[]});
      }

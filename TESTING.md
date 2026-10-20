@@ -1,3 +1,12 @@
+# Version 0.9.5 — 20 October 2026
+
+- The mirrored Undo arrow rotates counterclockwise throughout a toolbar Undo, including recovery and the final sidebar refresh. Repeated clicks remain disabled. Success and failure both clear the busy state; successful completion stays silent and empty history returns to grey. Reduced-motion preferences disable the animation.
+- All 67 JavaScript tests pass. Python workers are unchanged from their 93 passing tests on 0.9.2 and were not rerun for this presentation change.
+- Chrome checks with the exact generated bundle in the simulated-Colab harness confirmed the held Undo keeps its animation and changing rotation matrix, busy state, and disabled click state. Successful completion removed the animation and feedback, restored the mirrored resting transform, and greyed the empty-history button. A simulated recovery failure also stopped rotation and retained the error and available action.
+- Build reproducibility, JavaScript syntax, ZIP integrity, and packaged-file equality passed. This browser simulation does not establish the installed hosted Colab behavior; reload the extension and refresh Colab to activate the update. Chrome Store submission remains blocked by dashboard access.
+
+---
+
 # Version 0.9.4 — 20 October 2026
 
 - Successful and cleanly cancelled operations remove their loading circle immediately, leaving no completion text or status badge. Sidebar refreshes do not restore completed badges. Successful Undo is silent; failures and recovery conflicts remain visible.
