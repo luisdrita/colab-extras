@@ -7,10 +7,14 @@ header{display:flex;align-items:center;gap:12px}h1{font-size:21px;margin:0}small
 button{display:block;margin:8px 0;padding:7px 12px;border:1px solid #dadce0;border-radius:8px;background:#fff;color:#1967d2;cursor:pointer}
 #downloads{max-height:260px;overflow:auto}p{overflow-wrap:anywhere}
 </style>
-<header><img src="icons/icon-128.png" width="48" height="48" alt=""><div><h1>Colab Extras</h1><small>Version 0.9.1</small></div></header>
+<header><img src="icons/icon-128.png" width="48" height="48" alt=""><div><h1>Colab Extras</h1><small>Version 0.9.2</small></div></header>
 <p>Use the backwards arrow beside <b>Refresh</b> in Colab’s Files sidebar to <b>undo the last action immediately</b>. No dialog opens.</p>
 <p>Recover ZIP, extraction, deletion, rename, move, copy, folder creation, upload, and replacement actions. Recovery copies use disk space and depend on the runtime and retained recovery data.</p>
-<p>Each click reverses the newest supported file change, sidebar location change, or extension setting change. Right-click a file or folder and choose <b>History and settings…</b> for the full history and preferences.</p>
+<p>Each click reverses the newest supported file change, folder opening or closing, sidebar location change, or extension setting change. The icon is grey when there is nothing to undo.</p>
+<h2>Settings for this Colab tab</h2>
+<label><input type="checkbox" data-preference="overwrite" disabled> Allow extraction to replace existing files (originals are retained)</label><br>
+<label><input type="checkbox" data-preference="managedDownloads" disabled> Track downloads for optional cancellation/removal</label>
+<p id="preferences-status" role="status"></p>
 <h2>Local downloads</h2>
 <button id="enable-downloads">Enable optional download management</button>
 <p id="status" role="status"></p><div id="downloads"></div>

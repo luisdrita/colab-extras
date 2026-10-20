@@ -12,7 +12,7 @@ async function run(options={}){
   const ctx={...core,crypto:webcrypto,jobs,extractSource:'bundled Python',recoverySource:'recovery Python',undoBusy:false,undoPreferences:{overwrite:false},
     setStatus:(job,label,detail,error,progress)=>events.push({type:'status',label,detail,error,progress}),
     finishStatus:(job,label,detail,error)=>events.push({type:'finish',label,detail,error}),
-    addMenuItems:()=>{},context:()=>({}),
+    markUndoHistoryDirty:()=>{},addMenuItems:()=>{},context:()=>({}),
     request:async(ctx,url,method)=>{
       events.push({type:'request',url,method});
       if(url.includes('status.json'))return {json:async()=>statuses.shift()};

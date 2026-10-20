@@ -11,7 +11,7 @@ async function run(download,managed=false,cancel=false,conflict=false,cancelDuri
   const sandbox={...core,crypto:require('node:crypto').webcrypto,jobs:new Map(),
     undoBusy:false,undoPreferences:{managedDownloads:managed},
     archiveSource:'archive',recoverySource:'recovery',context:()=>ctx,
-    setStatus:(job,label)=>events.push({status:label}),addMenuItems:()=>{},
+    setStatus:(job,label)=>events.push({status:label}),markUndoHistoryDirty:()=>{},addMenuItems:()=>{},
     sleep:async()=>{if(cancel)sandbox.jobs.get('/content/folder').cancelled=true;},
     cleanup:async()=>{
       if(cancelDuringCleanup)sandbox.cancelJob('/content/folder');

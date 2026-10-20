@@ -1,3 +1,14 @@
+# Version 0.9.2 — 20 October 2026
+
+- Removed the history dialog and Undo-related context-menu commands. Move/Copy remain ordinary file commands; native Colab rename/new-folder controls are retained. Preferences moved to the extension popup and stay reversible through the toolbar button.
+- Empty Undo history now gives a grey, disabled icon with a Nothing to undo tooltip. History is loaded when a runtime connects and refreshed after tracked file mutations; local UI Undo uses the known history without creating a terminal per folder click.
+- Trusted folder-row openings and closings are tracked individually. Undo restores collapsed/expanded state and expanded descendants, resolves replacement rows by path, and retains an action if its folder is no longer available. Programmatic refreshes and Undo itself are not recorded as new folder actions.
+- 67 JavaScript tests pass; the unchanged Python recovery workers retain their 93 passing tests. Added checks cover button availability, nested restoration, reverse action order, row replacement, missing folders, capture/target event timing, and popup-only preference messaging.
+- Chrome checks with the exact generated bundle in the simulated-Colab harness confirmed folder open Undo, folder close Undo with a previously expanded child, sequential local Undo, and the absence of recovery commands in the menu. The final build showed a grey, disabled button after the last action, enabled it after opening a folder, and disabled it again after Undo. The open context menu had only ordinary file actions and no recovery/history commands. No Undo dialog appeared. Hosted Colab 0.9.2 and the popup-to-installed-tab integration require a manual extension reload and are not claimed as live-verified.
+- Chrome Store automation remains blocked; no Store publication is claimed. Earlier hosted-runtime and optional-download limitations below still apply.
+
+---
+
 # Version 0.9.1 — 20 October 2026
 
 - The toolbar Undo arrow now reverses exactly the newest supported action without opening a dialog. File recovery, sidebar navigation, and extension settings share chronological selection; runtime timestamps are normalized to the browser clock.

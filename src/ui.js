@@ -1,7 +1,7 @@
 // File mutations retain runtime-local recovery data.
 if (document.querySelector('meta[name="colab-folder-zip-version"]')) return;
 const marker=document.createElement('meta');
-marker.name='colab-folder-zip-version';marker.content='0.9.1';document.head.append(marker);
+marker.name='colab-folder-zip-version';marker.content='0.9.2';document.head.append(marker);
 const jobs=new Map();
 let selected=null;
 function context(){
@@ -142,7 +142,7 @@ async function run(target,download){
     if(job.cancelled&&job.result?.undo){
       try{
         const recovered=await recoveryCall({action:'undo',id:job.result.undo},job.ctx);
-        if(recovered.conflicts.length)rollbackDetail=' Later changes were preserved; review this action in History and settings.';
+        if(recovered.conflicts.length)rollbackDetail=' Later changes were preserved; resolve the conflict and click Undo again.';
         else job.result=null;
       }catch(rollbackError){rollbackDetail=' Recovery could not finish: '+rollbackError.message;}
     }
@@ -154,7 +154,7 @@ async function run(target,download){
     // Completed jobs are safe to clean. A lost connection can leave a
     // process alive, so retain incomplete staging files for diagnosis.
     if(job.result||job.settled||(job.created&&!job.started))await cleanup(job);
-    jobs.delete(path);addMenuItems();
+    jobs.delete(path);markUndoHistoryDirty();addMenuItems();
   }
 }
 function cancelJob(path){
@@ -195,9 +195,7 @@ function addMenuItems(){
     const actions=selected.isDirectory
       ? [['details','Folder details'],['zip','ZIP only'],['download','ZIP and download'],...(running==='zip'?[['cancel','Cancel ZIP']]:[]),['delete','Delete folder and contents…']]
       : [...(isExtractable(selected.path)?[['extract','Extract here']]:[]),...(running==='extract'?[['cancel','Cancel extraction']]:[])];
-    actions.push(['rename','Rename with Undo…'],['move','Move with Undo…'],['copy','Copy with Undo…']);
-    if(selected.isDirectory)actions.push(['newfolder','New folder with Undo…']);
-    actions.push(['history','History and settings…']);
+    actions.push(['move','Move…'],['copy','Copy…']);
     for(const old of menu.querySelectorAll('[data-cfz-action]'))if(!actions.some(([action])=>action===old.dataset.cfzAction))old.remove();
     for(const [action,label] of actions){
       let button=menu.querySelector(`[data-cfz-action="${action}"]`);
@@ -230,7 +228,6 @@ function addMenuItems(){
           if(action==='cancel'){
             cancelJob(target.path);
           }else if(action==='details')void runDetails(target);
-          else if(action==='history')void showUndo();
           else if(action==='delete')void runRecoverableDelete(target);
           else if(['rename','move','copy','newfolder'].includes(action))void runFileAction(target,action);
           else if(action==='extract')void runExtract(target);
