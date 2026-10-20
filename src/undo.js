@@ -257,6 +257,12 @@ function restoreUndoSettings(){
   undoPreferences=previous.before;settingHistory.pop();
 }
 function undoFeedback(text,error=false){
+  if(!error){
+    clearTimeout(undoFeedbackTimer);
+    const previous=document.querySelector('[data-cfz-undo-feedback]');
+    if(previous)previous.hidden=true;
+    return;
+  }
   const button=document.querySelector('[data-cfz-undo-button]');
   if(!button)return;
   let message=document.querySelector('[data-cfz-undo-feedback]');

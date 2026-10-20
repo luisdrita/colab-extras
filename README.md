@@ -4,9 +4,9 @@
 
 File tools for Google Colab, with a backwards-arrow **Undo** button beside **Refresh** in the Files sidebar. Inspect folders, create and download ZIPs, extract archives, and recover supported file changes.
 
-**Version 0.9.3 · Chrome 120+ · Independent extension, not affiliated with Google.**
+**Version 0.9.4 · Chrome 120+ · Independent extension, not affiliated with Google.**
 
-[Download version 0.9.3](https://github.com/luisdrita/colab-extras/releases/tag/v0.9.3). All 160 automated tests and browser checks of one-click Undo passed. Hosted Colab recovery checks passed on 0.9.0; see the [verification record](TESTING.md) for the exact coverage and remaining live checks.
+[Download version 0.9.4](https://github.com/luisdrita/colab-extras/releases/tag/v0.9.4). All 67 JavaScript tests pass; unchanged Python workers retain their 93 passing tests. Hosted Colab recovery checks passed on 0.9.0; see the [verification record](TESTING.md) for the exact browser coverage and remaining live checks.
 
 ![Disabled Undo and ordinary file menu in the simulated browser harness](docs/sidebar-undo-0.9.2.png)
 
@@ -14,7 +14,7 @@ File tools for Google Colab, with a backwards-arrow **Undo** button beside **Ref
 
 The [Chrome Web Store](https://chromewebstore.google.com/detail/colab-extras/aeghdoedemnfdoagpopjdbopnlphaaad) may still offer an earlier version. Upload, review, and publication are separate stages. See [verification status](TESTING.md) for the tested scope and remaining live checks.
 
-While ZIP creation, downloads, extraction, deletion, or folder scans run, only the Colab-style loading circle is shown beside the item. Operation names and percentages remain available to assistive technology and in tooltips; completion and error messages remain visible.
+While ZIP creation, downloads, extraction, deletion, or folder scans run, only the Colab-style loading circle is shown beside the item. Operation names and percentages remain available to assistive technology and in tooltips; the circle disappears at completion without leaving a message. Error messages remain visible.
 
 ## Undo coverage
 
@@ -32,7 +32,7 @@ While ZIP creation, downloads, extraction, deletion, or folder scans run, only t
 | Folder opening/closing | Reverses the latest expansion or collapse, restoring previously expanded subfolders. |
 | Sidebar navigation | Returns to a previously visited sidebar location without changing Python's working directory. |
 
-Click **Undo** beside Refresh to immediately reverse the most recent supported action: a file change, sidebar path change, folder opening or closing, or extension setting change. Each click handles one action without opening a dialog. If the latest action has a conflict, recovery preserves later edits and stops there; it does not silently skip to an older action. A short message appears in the sidebar.
+Click **Undo** beside Refresh to immediately reverse the most recent supported action: a file change, sidebar path change, folder opening or closing, or extension setting change. Each click handles one action without opening a dialog. If the latest action has a conflict, recovery preserves later edits and stops there; it does not silently skip to an older action. Successful Undo finishes without a sidebar message; conflicts and errors remain visible.
 
 The button is grey and disabled when there is nothing to undo. Opening and closing folder rows joins the same action history; undoing a close also restores previously expanded subfolders. Undo controls are not added to right-click menus. Preferences are available in the Chrome extension popup.
 

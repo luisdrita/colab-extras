@@ -1,0 +1,7 @@
+Colab Extras 0.9.4 — Quiet completion
+
+Running operations show only their loading circle. Once finished or cancelled cleanly, the circle disappears immediately without a completion message or leftover badge. Folder-details results remain visible without a Scan complete label. Successful Undo is quiet too.
+
+Failures and recovery conflicts remain visible. File operations and recovery logic are unchanged.
+
+Validation: 67 JavaScript tests pass; browser checks are recorded in TESTING.md. Python workers are unchanged from their 93 passing tests. Chrome Store submission remains manual because automated dashboard access is blocked.
