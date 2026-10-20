@@ -4,15 +4,15 @@
 
 File tools for Google Colab, with a backwards-arrow **Undo** button beside **Refresh** in the Files sidebar. Inspect folders, create and download ZIPs, extract archives, and recover supported file changes.
 
-**Version 0.9.0 release candidate · Chrome 120+ · Independent extension, not affiliated with Google.**
+**Version 0.9.0 · Chrome 120+ · Independent extension, not affiliated with Google.**
 
-[Download the 0.9.0 candidate](https://github.com/luisdrita/colab-extras/releases/tag/v0.9.0-rc.1). Live installed-extension verification is pending.
+[Download version 0.9.0](https://github.com/luisdrita/colab-extras/releases/tag/v0.9.0). Hosted Colab recovery checks and 137 automated tests passed; see the [verification record](TESTING.md) for the exact coverage and remaining live checks.
 
 ![Undo panel in the simulated browser harness](docs/undo-preview-dark.png)
 
 *Preview uses simulated file results; it is not evidence of a live Colab operation.*
 
-The [Chrome Web Store](https://chromewebstore.google.com/detail/colab-extras/aeghdoedemnfdoagpopjdbopnlphaaad) may still offer an earlier version. Upload, review, and publication are separate stages. See [verification status](TESTING.md) before using a candidate build on important data.
+The [Chrome Web Store](https://chromewebstore.google.com/detail/colab-extras/aeghdoedemnfdoagpopjdbopnlphaaad) may still offer an earlier version. Upload, review, and publication are separate stages. See [verification status](TESTING.md) for the tested scope and remaining live checks.
 
 ## Undo coverage
 

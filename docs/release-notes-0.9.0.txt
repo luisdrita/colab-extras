@@ -1,0 +1,15 @@
+Colab Extras 0.9.0 — Undo and recovery
+
+Adds a backwards-arrow Undo button beside Refresh in the Files sidebar, recoverable operation history, previous sidebar locations, and reversal of extension preferences.
+
+Supported operations include ZIP creation, extraction with optional replacement, recoverable folder deletion, rename, move, copy, folder creation, upload and replacement within /content. Originals are retained before replacement or deletion. Undo checks file identity and contents, preserving later edits and reporting conflicts. Cancellation attempts rollback; finished operations use Undo.
+
+Optional download management tracks browser downloads separately from runtime archives. The extension popup requests optional downloads permission and manages only its own tracked downloads. Runtime Undo never automatically deletes a local browser copy.
+
+Validation: 93 Python tests and 44 JavaScript tests passed. Live hosted Colab checks passed for the Undo button, ZIP and extraction reversal, exact original-content restoration, later-edit conflict preservation, native rename/new-folder/upload/replace, extension copy/move/deletion recovery, sidebar back navigation, and settings reversal. The notebook's single empty cell was not executed or changed.
+
+The live check exposed a stale Cancel control after ZIP completion; this release fixes it and includes two regression tests for post-completion and pre-worker cancellation. Reload confirmation of those final UI fixes remains pending. The first optional managed-download attempt reported missing Chrome permission and retained its runtime ZIP for recovery; completed download cancellation/removal has not been live-verified.
+
+Recovery data consumes disk space and is scoped to the current runtime journal. Runtime deletion, missing recovery data, arbitrary notebook/terminal changes, and earlier untracked actions cannot be undone. Mounted Drive, other runtime types, large datasets, and all cancellation timings have not been live-verified.
+
+Chrome Web Store upload, review and publication remain separate: automated dashboard access was blocked. This GitHub release does not claim Store publication.
