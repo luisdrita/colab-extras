@@ -1,7 +1,7 @@
 // File mutations retain runtime-local recovery data.
 if (document.querySelector('meta[name="colab-folder-zip-version"]')) return;
 const marker=document.createElement('meta');
-marker.name='colab-folder-zip-version';marker.content='0.9.4';document.head.append(marker);
+marker.name='colab-folder-zip-version';marker.content='0.9.5';document.head.append(marker);
 const jobs=new Map();
 let selected=null;
 function context(){

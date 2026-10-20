@@ -1,0 +1,5 @@
+Colab Extras 0.9.5 — Rotating Undo icon
+
+The backwards Undo arrow rotates counterclockwise while an undo is running, then stops on completion or failure. Repeated clicks remain disabled, successful completion stays silent, and an empty history returns to the grey icon. Reduced-motion preferences are respected.
+
+Validation details and browser coverage are recorded in TESTING.md. File recovery workers are unchanged. Chrome Store submission remains manual because automated dashboard access is blocked.

@@ -289,8 +289,7 @@ async function undoLastAction(){
   if(undoClickPending)return;
   if(jobs.size||undoBusy){undoFeedback('Wait for the active operation to finish.');return;}
   undoClickPending=true;undoBusy=true;
-  const button=document.querySelector('[data-cfz-undo-button]');
-  button?.setAttribute('disabled','');button?.setAttribute('aria-busy','true');
+  updateUndoButton();
   undoFeedback('Undoing the last action…');
   try{
     hookNativeFiles();
@@ -336,7 +335,7 @@ async function undoLastAction(){
   }catch(error){undoFeedback(error.message||'Undo could not finish.',true);}
   finally{
     undoBusy=false;undoClickPending=false;
-    button?.removeAttribute('aria-busy');updateUndoButton();
+    updateUndoButton();
   }
 }
 function element(tag,text){
@@ -351,8 +350,13 @@ function installUndoButton(){
   button.dataset.cfzUndoButton='';button.className='cfz-undo-button';
   button.setAttribute('touch-target','none');button.setAttribute('title','Undo last action');
   button.setAttribute('data-aria-label','Undo last action');
+  const style=document.createElement('style');style.textContent=`
+    [data-cfz-undo-button][aria-busy="true"] > md-icon{animation:cfz-undo-rotate .9s linear infinite;transform-origin:center}
+    @keyframes cfz-undo-rotate{from{transform:rotate(0deg) scaleX(-1)}to{transform:rotate(-360deg) scaleX(-1)}}
+    @media(prefers-reduced-motion:reduce){[data-cfz-undo-button][aria-busy="true"] > md-icon{animation:none}}
+  `;
   const icon=document.createElement('md-icon');icon.setAttribute('aria-hidden','true');
-  icon.textContent='refresh';icon.style.transform='scaleX(-1)';button.append(icon);
+  icon.textContent='refresh';icon.style.transform='scaleX(-1)';button.append(style,icon);
   button.addEventListener('click',async event=>{if(event.isTrusted&&button.getAttribute('aria-disabled')!=='true')await undoLastAction();});
   refresh.after(button);updateUndoButton();
 }
@@ -362,13 +366,16 @@ function updateUndoButton(){
   if(!button)return;
   const hasHistory=Boolean(settingHistory.length||locationHistory.length||folderHistory.length||runtimeHistory?.records.length);
   const disabled=!hasHistory||undoBusy||undoClickPending||jobs.size>0||historyLoading;
+  // Follow the actual Undo click, not unrelated file work or history checks.
+  // Recreated toolbar buttons also inherit the current animation state.
+  if(undoClickPending)button.setAttribute('aria-busy','true');else button.removeAttribute('aria-busy');
   button.disabled=Boolean(disabled);
   if(disabled)button.setAttribute('disabled','');else button.removeAttribute('disabled');
   button.setAttribute('aria-disabled',String(Boolean(disabled)));
-  button.style.color=disabled?'var(--colab-secondary-text-color,#9aa0a6)':'';
-  button.style.opacity=disabled?'0.38':'1';
+  button.style.color=undoClickPending?'var(--colab-primary-color,#1a73e8)':disabled?'var(--colab-secondary-text-color,#9aa0a6)':'';
+  button.style.opacity=disabled&&!undoClickPending?'0.38':'1';
   button.style.cursor=disabled?'default':'pointer';
-  button.title=undoBusy||undoClickPending||jobs.size?'Undo unavailable while an operation is running':
+  button.title=undoClickPending?'Undoing the last action…':undoBusy||jobs.size?'Undo unavailable while an operation is running':
     historyLoading?'Checking Undo history':hasHistory?'Undo last action':'Nothing to undo';
 }
 async function refreshUndoAvailability(){
