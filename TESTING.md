@@ -1,3 +1,12 @@
+# Version 0.9.3 — 20 October 2026
+
+- Running operation badges display only the existing Material-style loading circle. Action labels and percentages are hidden visually while the progress indicator retains its accessible label and tooltip. Final results and errors remain visible. The folder-details scan also hides its running status text until it finishes.
+- All 67 JavaScript tests pass. Python workers are unchanged from the 93 passing tests on 0.9.2; they were not rerun for this presentation-only change.
+- Chrome checks with the exact generated bundle in the simulated-Colab harness verified determinate and indeterminate ZIP progress with no visible label, preservation after file-row replacement, visible ZIP completion, circle-only folder scanning, accessible scan details, and visible cancellation feedback.
+- Build reproducibility, JavaScript syntax, and ZIP integrity/content equality passed. Installed hosted Colab needs a manual reload; Chrome Store dashboard access remains blocked and no Store publication is claimed.
+
+---
+
 # Version 0.9.2 — 20 October 2026
 
 - Removed the history dialog and Undo-related context-menu commands. Move/Copy remain ordinary file commands; native Colab rename/new-folder controls are retained. Preferences moved to the extension popup and stay reversible through the toolbar button.

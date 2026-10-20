@@ -1,0 +1,7 @@
+Colab Extras 0.9.3 — Loading circle only
+
+Running ZIP creation, downloads, extraction, deletion, and folder scans now show only the Colab-style loading circle, without action labels or percentages beside it. The folder-details scan also shows just its circle while loading.
+
+Accessible progress labels and tooltips retain operation details. Completion and error messages remain visible. File operations, cancellation, and Undo behavior are unchanged.
+
+Validation: the 67 JavaScript tests pass, and browser UI checks are recorded in TESTING.md. The Python workers are unchanged from the 93 passing tests on 0.9.2. Chrome Store submission remains manual because automated dashboard access is blocked.
