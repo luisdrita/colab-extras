@@ -1,7 +1,7 @@
 // File mutations retain runtime-local recovery data.
 if (document.querySelector('meta[name="colab-folder-zip-version"]')) return;
 const marker=document.createElement('meta');
-marker.name='colab-folder-zip-version';marker.content='0.9.0';document.head.append(marker);
+marker.name='colab-folder-zip-version';marker.content='0.9.1';document.head.append(marker);
 const jobs=new Map();
 let selected=null;
 function context(){
@@ -142,7 +142,7 @@ async function run(target,download){
     if(job.cancelled&&job.result?.undo){
       try{
         const recovered=await recoveryCall({action:'undo',id:job.result.undo},job.ctx);
-        if(recovered.conflicts.length)rollbackDetail=' Later changes were preserved; review this action in Undo.';
+        if(recovered.conflicts.length)rollbackDetail=' Later changes were preserved; review this action in History and settings.';
         else job.result=null;
       }catch(rollbackError){rollbackDetail=' Recovery could not finish: '+rollbackError.message;}
     }
@@ -197,6 +197,7 @@ function addMenuItems(){
       : [...(isExtractable(selected.path)?[['extract','Extract here']]:[]),...(running==='extract'?[['cancel','Cancel extraction']]:[])];
     actions.push(['rename','Rename with Undo…'],['move','Move with Undo…'],['copy','Copy with Undo…']);
     if(selected.isDirectory)actions.push(['newfolder','New folder with Undo…']);
+    actions.push(['history','History and settings…']);
     for(const old of menu.querySelectorAll('[data-cfz-action]'))if(!actions.some(([action])=>action===old.dataset.cfzAction))old.remove();
     for(const [action,label] of actions){
       let button=menu.querySelector(`[data-cfz-action="${action}"]`);
@@ -229,6 +230,7 @@ function addMenuItems(){
           if(action==='cancel'){
             cancelJob(target.path);
           }else if(action==='details')void runDetails(target);
+          else if(action==='history')void showUndo();
           else if(action==='delete')void runRecoverableDelete(target);
           else if(['rename','move','copy','newfolder'].includes(action))void runFileAction(target,action);
           else if(action==='extract')void runExtract(target);
@@ -244,7 +246,7 @@ function addMenuItems(){
       if(action==='delete'){try{deletionPath(selected.path);}catch(error){reason=error.message;}}
       if(action==='extract'){try{extractionPath(selected.path);}catch(error){reason=error.message;}}
       const disabled=action!=='cancel' && (Boolean(reason)||jobs.size>0||undoBusy);
-      button.title=reason || (disabled?'Wait for the current operation in this location to finish.':action==='extract'?'Extract beside this archive. Replacement follows your Undo settings.':'');
+      button.title=reason || (disabled?'Wait for the current operation in this location to finish.':action==='extract'?'Extract beside this archive. Replacement follows your extraction settings.':'');
       if(action==='delete')button.style.color=disabled?'':'#d93025';
       button.setAttribute('aria-disabled',String(disabled));button.classList.toggle('goog-menuitem-disabled',disabled);
     }

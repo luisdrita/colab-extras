@@ -1,6 +1,6 @@
 # Colab Extras — Privacy policy
 
-Effective 20 October 2026 · Extension version 0.9.0
+Effective 20 October 2026 · Extension version 0.9.1
 
 Colab Extras provides file tools and Undo in Google Colab. It does not send your files, notebook contents, recovery copies, or operation history to the developer or an external file-processing service.
 
@@ -20,7 +20,7 @@ Temporary worker scripts and status files are removed after completion when poss
 
 ## Optional browser downloads
 
-Ordinary ZIP downloads continue to work without the downloads permission. If you enable optional download management in the extension popup and select tracking in the Undo settings, the extension uses Chrome's downloads API to create and track its own ZIP downloads. Chrome asks for the downloads permission when you enable this feature.
+Ordinary ZIP downloads continue to work without the downloads permission. If you enable optional download management in the extension popup and select tracking in History and settings, the extension uses Chrome's downloads API to create and track its own ZIP downloads. Chrome asks for the downloads permission when you enable this feature.
 
 The extension stores the download ID, operation ID, filename, and timestamp in Chrome extension local storage. It checks the state and local path of those tracked downloads when displaying its popup. The popup can cancel a tracked download or, after confirmation, permanently remove its local file. It does not manage downloads created by other extensions or other untracked downloads. Webpages cannot request local-file removal through the extension's message bridge. Download records remain until extension storage is cleared or the extension is uninstalled.
 
@@ -32,7 +32,7 @@ The required `storage` permission stores metadata for the extension's own option
 
 ## Choices and limitations
 
-You choose which actions to run. Extraction preserves existing files by default. An Undo setting enables replacement while retaining originals. Cancellation attempts to reverse completed steps while keeping later changes. Conflicts are reported instead of overwriting newer work. Arbitrary notebook code, terminal commands, other users' activity, and actions before tracking began are outside Undo's coverage.
+You choose which actions to run. Extraction preserves existing files by default. A setting in History and settings enables replacement while retaining originals. Cancellation attempts to reverse completed steps while keeping later changes. Conflicts are reported instead of overwriting newer work. Arbitrary notebook code, terminal commands, other users' activity, and actions before tracking began are outside Undo's coverage.
 
 You can disable or uninstall Colab Extras in Chrome. Uninstalling does not delete files already created, downloaded, or retained for recovery. The developer receives none of the operation data. Chrome Web Store may provide aggregate installation statistics and feedback that you submit.
 

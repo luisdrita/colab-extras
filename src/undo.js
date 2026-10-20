@@ -5,6 +5,7 @@ let undoPreferences={...undoDefaults};
 try{Object.assign(undoPreferences,JSON.parse(localStorage.getItem(undoPreferencesKey)||'{}'));}catch{}
 const settingHistory=[];
 let undoQueue=Promise.resolve(),undoBusy=false,undoDialog=null,undoRuntime=null;
+let undoClickPending=false,undoFeedbackTimer=null;
 const uploadTransactions=new Map();
 const locationHistory=[];
 let currentLocation=null,navigatingBack=false;
@@ -35,6 +36,7 @@ async function recoveryCall(args,ctx=context()){
       const result=await response.json();
       if(result.running)continue;
       if(!result.ok)throw new Error(result.error||'Recovery failed.');
+      if(args.action==='list')result.receivedAt=Date.now();
       return result;
     }
   }finally{
@@ -207,7 +209,7 @@ function observeLocation(){
   if(typeof candidate!=='string')return;
   const path='/'+candidate.replace(/^\/+/,'');
   if(currentLocation&&currentLocation.path!==path&&!navigatingBack){
-    locationHistory.push(currentLocation);
+    locationHistory.push({...currentLocation,time:Date.now()});
     if(locationHistory.length>100)locationHistory.shift();
   }
   currentLocation={path};
@@ -218,11 +220,91 @@ async function previousLocation(){
   if(!previous)throw new Error('No previous sidebar location in this tab.');
   const tree=browser?.currentTree;
   if(!tree?.files?.getFile||!tree.refresh)throw new Error('The Files sidebar is unavailable.');
+  const startingPath=tree.files.rootPath;
   const folder=await tree.files.getFile(previous.path);
   if(!folder.isDirectory)throw new Error('The previous folder is no longer available.');
+  if(locationHistory[locationHistory.length-1]!==previous||tree.files.rootPath!==startingPath)throw new Error('The sidebar location changed. Click Undo again.');
   navigatingBack=true;
-  try{tree.files.rootPath=previous.path.slice(1);await tree.refresh();locationHistory.pop();currentLocation=previous;}
+  try{tree.files.rootPath=previous.path.slice(1);await tree.refresh();locationHistory.pop();currentLocation={path:previous.path};}
   finally{navigatingBack=false;}
+}
+function changeUndoPreference(key,value){
+  if(jobs.size||undoBusy)throw new Error('Wait for the active operation to finish.');
+  const next={...undoPreferences,[key]:Boolean(value)};
+  localStorage.setItem(undoPreferencesKey,JSON.stringify(next));
+  settingHistory.push({before:{...undoPreferences},time:Date.now()});
+  undoPreferences=next;
+}
+function restoreUndoSettings(){
+  const previous=settingHistory[settingHistory.length-1];
+  if(!previous)throw new Error('No settings changes to undo in this tab.');
+  localStorage.setItem(undoPreferencesKey,JSON.stringify(previous.before));
+  undoPreferences=previous.before;settingHistory.pop();
+}
+function undoFeedback(text,error=false){
+  const button=document.querySelector('[data-cfz-undo-button]');
+  if(!button)return;
+  let message=document.querySelector('[data-cfz-undo-feedback]');
+  if(!message){
+    message=element('div');message.dataset.cfzUndoFeedback='';
+    message.setAttribute('role','status');message.setAttribute('aria-live','polite');
+    message.style.cssText='font:12px/1.5 Roboto,Arial,sans-serif;margin:6px 12px;overflow-wrap:anywhere;';
+    button.parentElement.after(message);
+  }
+  clearTimeout(undoFeedbackTimer);message.hidden=false;message.textContent=text;
+  message.style.color=error?'var(--colab-error-color,#b3261e)':'var(--colab-secondary-text-color,inherit)';
+  if(error)undoFeedbackTimer=null;
+  else undoFeedbackTimer=setTimeout(()=>{message.hidden=true;},10000);
+}
+function newestUndoAction(records,localActions,serverTime,receivedAt){
+  // Compare runtime journal times with tab actions without relying on the
+  // runtime and laptop clocks being identical.
+  const offset=Number.isFinite(serverTime)?receivedAt-serverTime*1000:0;
+  const actions=records.map(record=>({kind:'file',record,time:record.time*1000+offset}));
+  actions.push(...localActions);
+  return actions.sort((a,b)=>b.time-a.time)[0];
+}
+async function undoLastAction(){
+  if(undoClickPending)return;
+  if(jobs.size||undoBusy){undoFeedback('Wait for the active operation to finish.');return;}
+  undoClickPending=true;undoBusy=true;
+  const button=document.querySelector('[data-cfz-undo-button]');
+  button?.setAttribute('disabled','');button?.setAttribute('aria-busy','true');
+  undoFeedback('Undoing the last action…');
+  try{
+    hookNativeFiles();
+    observeLocation();
+    const setting=settingHistory[settingHistory.length-1],location=locationHistory[locationHistory.length-1];
+    const localActions=[];
+    if(setting)localActions.push({kind:'setting',entry:setting,time:setting.time});
+    if(location)localActions.push({kind:'location',entry:location,time:location.time});
+    await serialUndo(async()=>{
+      if(jobs.size)throw new Error('Wait for the active operation to finish.');
+      undoBusy=true;
+      const ctx=context();
+      const history=await recoveryCall({action:'list'},ctx);
+      assertRuntime(ctx);
+      const latest=newestUndoAction(history.records,localActions,history.server_time,history.receivedAt??Date.now());
+      if(!latest){undoFeedback('Nothing to undo.');return;}
+      if(latest.kind==='setting'){
+        if(settingHistory[settingHistory.length-1]!==latest.entry)throw new Error('Settings changed. Click Undo again.');
+        restoreUndoSettings();undoFeedback('Undone: settings change.');
+      }else if(latest.kind==='location'){
+        if(locationHistory[locationHistory.length-1]!==latest.entry)throw new Error('The sidebar location changed. Click Undo again.');
+        await previousLocation();undoFeedback('Returned to '+currentLocation.path+'.');
+      }else{
+        const result=await recoveryCall({action:'undo',id:latest.record.id},ctx);
+        try{await document.querySelector('colab-file-browser')?.currentTree?.refresh?.();}catch{}
+        if(result.conflicts.length){
+          undoFeedback('Could not fully undo '+latest.record.label+'. Later changes were preserved: '+result.conflicts.map(c=>c.path+' — '+c.reason).join('; '),true);
+        }else undoFeedback('Undone: '+latest.record.label+'.');
+      }
+    });
+  }catch(error){undoFeedback(error.message||'Undo could not finish.',true);}
+  finally{
+    undoBusy=false;undoClickPending=false;
+    button?.removeAttribute('disabled');button?.removeAttribute('aria-busy');
+  }
 }
 function element(tag,text){
   const node=document.createElement(tag);
@@ -236,8 +318,8 @@ async function showUndo(){
   if(undoDialog?.isConnected){undoDialog.focus();return;}
   const dialog=element('dialog');undoDialog=dialog;
   dialog.style.cssText='background:var(--colab-primary-surface-color,#fff);color:var(--colab-primary-text-color,#202124);border:1px solid var(--colab-border-color,#dadce0);border-radius:16px;max-width:560px;width:calc(100vw - 64px);max-height:75vh;padding:24px;font:14px/1.5 Roboto,Arial,sans-serif;';
-  dialog.setAttribute('aria-label','Colab Extras Undo');
-  dialog.append(element('h2','Undo'));
+  dialog.setAttribute('aria-label','Colab Extras history and settings');
+  dialog.append(element('h2','History and settings'));
   dialog.append(element('p','Restore file changes made while Colab Extras is active. Recovery data stays in this runtime and uses disk space. Later edits are preserved.'));
   const message=element('p','Loading recovery history…');message.dataset.cfzUndoMessage='';message.setAttribute('role','status');dialog.append(message);
   const list=element('div');list.dataset.cfzUndoList='';dialog.append(list);
@@ -252,7 +334,7 @@ async function showUndo(){
     });return b;
   };
   const reload=async()=>{
-    if(jobs.size||undoBusy){undoMessage(dialog,'Wait for the active operation to finish, then reopen Undo.');return;}
+    if(jobs.size||undoBusy){undoMessage(dialog,'Wait for the active operation to finish, then reopen history.');return;}
     const result=await serialUndo(()=>recoveryCall({action:'list'}));
     list.replaceChildren();
     undoMessage(dialog,result.records.length?'Choose an action to undo. Conflicting files are kept.':'No recoverable file changes in this runtime.');
@@ -283,15 +365,13 @@ async function showUndo(){
     const input=element('input');input.type='checkbox';input.checked=Boolean(undoPreferences[key]);
     input.addEventListener('change',event=>{
       if(!event.isTrusted)return;
-      settingHistory.push({...undoPreferences});
-      undoPreferences[key]=input.checked;
-      localStorage.setItem(undoPreferencesKey,JSON.stringify(undoPreferences));
+      try{changeUndoPreference(key,input.checked);}
+      catch(error){input.checked=Boolean(undoPreferences[key]);undoMessage(dialog,error.message);}
     });
     line.append(input,document.createTextNode(' '+label));preferences.append(line);
   }
   preferences.append(button('Undo last settings change',async()=>{
-    if(!settingHistory.length)throw new Error('No settings changes to undo in this tab.');
-    undoPreferences=settingHistory.pop();localStorage.setItem(undoPreferencesKey,JSON.stringify(undoPreferences));
+    restoreUndoSettings();
     [...preferences.querySelectorAll('input')].forEach((input,i)=>input.checked=Boolean(undoPreferences[['overwrite','managedDownloads'][i]]));
     undoMessage(dialog,'Settings restored.');
   }));
@@ -305,11 +385,11 @@ function installUndoButton(){
   if(!refresh||document.querySelector('[data-cfz-undo-button]'))return;
   const button=document.createElement('md-icon-button');
   button.dataset.cfzUndoButton='';button.className='cfz-undo-button';
-  button.setAttribute('touch-target','none');button.setAttribute('title','Undo Colab Extras actions');
-  button.setAttribute('data-aria-label','Undo Colab Extras actions');
+  button.setAttribute('touch-target','none');button.setAttribute('title','Undo last action');
+  button.setAttribute('data-aria-label','Undo last action');
   const icon=document.createElement('md-icon');icon.setAttribute('aria-hidden','true');
   icon.textContent='refresh';icon.style.transform='scaleX(-1)';button.append(icon);
-  button.addEventListener('click',event=>{if(event.isTrusted)void showUndo();});
+  button.addEventListener('click',async event=>{if(event.isTrusted)await undoLastAction();});
   refresh.after(button);
 }
 const undoObserver=new MutationObserver(()=>{installUndoButton();hookNativeFiles();observeLocation();});

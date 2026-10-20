@@ -46,7 +46,7 @@ async function runExtract(target){
   }catch(error){
     const cancelled=job.backendCancelled||(!job.started&&job.cancelled);
     let detail=error.message||'The connection to Colab was lost.';
-    if(job.partial)detail+=' Later changes were preserved. Open Undo to review remaining conflicts.';
+    if(job.partial)detail+=' Later changes were preserved. Open History and settings to review remaining conflicts.';
     else if(job.started&&!job.settled)detail+=' Refresh Files to check for partially extracted contents before retrying.';
     if(job.settled)try{await document.querySelector('colab-file-browser')?.currentTree?.refresh?.();}catch{}
     finishStatus(job,cancelled?'Extraction cancelled':'Extraction failed',detail,!cancelled||job.partial);
