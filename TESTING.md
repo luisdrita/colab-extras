@@ -1,3 +1,13 @@
+# Version 0.9.4 — 20 October 2026
+
+- Successful and cleanly cancelled operations remove their loading circle immediately, leaving no completion text or status badge. Sidebar refreshes do not restore completed badges. Successful Undo is silent; failures and recovery conflicts remain visible.
+- Folder-details results still show the requested statistics, but the completed scan has no status label.
+- All 67 JavaScript tests pass. Python workers are unchanged from their 93 passing tests on 0.9.2 and were not rerun for this presentation-only change.
+- Chrome checks using the exact generated bundle in the simulated-Colab harness verified a completed ZIP leaves zero status badges, refreshing file rows does not restore them, completed folder statistics remain visible with an empty hidden status, and successful Undo leaves no feedback element and a disabled empty-history button.
+- Build reproducibility, JavaScript syntax, and ZIP integrity/content equality passed. The installed extension requires a manual reload and Colab refresh; these browser checks do not establish hosted-runtime behavior. Chrome Store dashboard access remains blocked and no Store publication is claimed.
+
+---
+
 # Version 0.9.3 — 20 October 2026
 
 - Running operation badges display only the existing Material-style loading circle. Action labels and percentages are hidden visually while the progress indicator retains its accessible label and tooltip. Final results and errors remain visible. The folder-details scan also hides its running status text until it finishes.

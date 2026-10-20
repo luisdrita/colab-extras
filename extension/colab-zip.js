@@ -171,7 +171,7 @@ function createProgress(label){
 // File mutations retain runtime-local recovery data.
 if (document.querySelector('meta[name="colab-folder-zip-version"]')) return;
 const marker=document.createElement('meta');
-marker.name='colab-folder-zip-version';marker.content='0.9.3';document.head.append(marker);
+marker.name='colab-folder-zip-version';marker.content='0.9.4';document.head.append(marker);
 const jobs=new Map();
 let selected=null;
 function context(){
@@ -197,6 +197,7 @@ function setStatus(job,label,detail=label,error=false,progress=null){
   job.view=view;
   // A parent folder must never reuse a nested child's status badge.
   let badge=[...view.querySelectorAll('[data-cfz-status]')].find(node=>node.closest('colab-file-view')===view);
+  if(job.finished&&!error){badge?.remove();job.badge=null;return;}
   if(!badge){
     badge=document.createElement('span');badge.dataset.cfzStatus='';
     const text=document.createElement('span');text.dataset.cfzStatusText='';
@@ -217,9 +218,9 @@ function setStatus(job,label,detail=label,error=false,progress=null){
   badge.title=detail;
   badge.style.color=error?'var(--colab-error-color,#b3261e)':'var(--colab-secondary-text-color,inherit)';
   const busy=!error&&!job.finished&&jobs.get(job.path)===job;
-  // Running actions show only the ring; its accessible label and the tooltip
-  // retain the operation detail. Final results and errors stay readable.
-  text.hidden=busy;
+  // Ordinary actions show only the ring and leave no completion badge.
+  // Error details remain visible so failures cannot look like success.
+  text.hidden=!error;
   if(busy){
     if(!badge.cfzProgress){badge.cfzProgress=createProgress(label);badge.prepend(badge.cfzProgress.element);}
     badge.cfzProgress.update(label,progress);
@@ -231,7 +232,6 @@ function finishStatus(job,label,detail,error=false){
   job.finished=true;
   setStatus(job,label,detail,error);
   addMenuItems();
-  if(!error)setTimeout(()=>{if(job.badge?.dataset.cfzJob===job.id)job.badge.remove();},10000);
 }
 async function cleanup(job){
   if(!job.created)return;
@@ -492,8 +492,7 @@ function showDetailsDialog(job){
   },render(result){
     view.settled=true;if(view.closed)return;
     get('scan-progress').hidden=true;progress.element.remove();
-    get('status').hidden=false;
-    get('status').textContent=result.skipped?'Scan finished with unreadable or changed items.':'Scan complete';
+    get('status').hidden=true;get('status').textContent='';
     get('result').hidden=false;get('done').textContent='Close';
     get('size').textContent=formatBytes(result.bytes);get('exact').textContent=result.bytes.toLocaleString()+' bytes';
     for(const key of ['files','folders','links'])get(key).textContent=result[key].toLocaleString();
@@ -888,6 +887,12 @@ function restoreUndoSettings(){
   undoPreferences=previous.before;settingHistory.pop();
 }
 function undoFeedback(text,error=false){
+  if(!error){
+    clearTimeout(undoFeedbackTimer);
+    const previous=document.querySelector('[data-cfz-undo-feedback]');
+    if(previous)previous.hidden=true;
+    return;
+  }
   const button=document.querySelector('[data-cfz-undo-button]');
   if(!button)return;
   let message=document.querySelector('[data-cfz-undo-feedback]');

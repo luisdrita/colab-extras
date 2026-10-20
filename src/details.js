@@ -57,8 +57,7 @@ function showDetailsDialog(job){
   },render(result){
     view.settled=true;if(view.closed)return;
     get('scan-progress').hidden=true;progress.element.remove();
-    get('status').hidden=false;
-    get('status').textContent=result.skipped?'Scan finished with unreadable or changed items.':'Scan complete';
+    get('status').hidden=true;get('status').textContent='';
     get('result').hidden=false;get('done').textContent='Close';
     get('size').textContent=formatBytes(result.bytes);get('exact').textContent=result.bytes.toLocaleString()+' bytes';
     for(const key of ['files','folders','links'])get(key).textContent=result[key].toLocaleString();
