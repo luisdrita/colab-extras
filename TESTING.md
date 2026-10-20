@@ -22,13 +22,13 @@ Version 0.9.0 was manually installed in Chrome and exercised on a hosted Colab P
 
 Colab can retain stale file previews after external filesystem changes; content verification above used closed and freshly reopened previews.
 
-The live cancellation check exposed a stale Cancel action during post-completion cleanup. The final build removes that action as soon as the result is finished and ignores stale clicks. It also cleans staging after cancellation before the ZIP worker starts. Both boundaries have regression tests; live confirmation after reloading this final build is pending.
+The live cancellation check exposed a stale Cancel action during post-completion cleanup. The final build removes that action as soon as the result is finished and ignores stale clicks. It also cleans staging after cancellation before the ZIP worker starts. Both boundaries have regression tests. After the user reloaded the final build, two startup-cancellation checks left no new archive in the refreshed sidebar or ready action in history. Completed actions no longer offered Cancel. Mid-operation rollback at all timing points remains covered only by the applicable automated tests.
 
 ## Publication and remaining validation
 
 The Chrome Web Store developer dashboard returned `Not allowed` during this session. No package upload, review submission, or Store publication has been confirmed for 0.9.0. GitHub publication is tracked separately.
 
-Optional managed-download integration is pending: the first live attempt reported missing Chrome permission, retained the runtime ZIP, and kept it available in Undo.
+Optional managed-download integration is pending: attempts before and after reload reported missing Chrome permission, retained the runtime ZIP, and kept it available in Undo. The user had reported enabling permission, so the exact active extension copy and grant still need confirmation. Successful managed downloads and completed local-copy removal are not claimed as live-verified.
 
 Mounted Drive, free-tier/local/enterprise runtimes, large datasets, and mid-operation cancellation are not claimed as live-verified. Applicable automated tests cover cancellation and recovery boundaries; those results do not establish every live platform or timing case.
 

@@ -8,7 +8,7 @@ Optional download management tracks browser downloads separately from runtime ar
 
 Validation: 93 Python tests and 44 JavaScript tests passed. Live hosted Colab checks passed for the Undo button, ZIP and extraction reversal, exact original-content restoration, later-edit conflict preservation, native rename/new-folder/upload/replace, extension copy/move/deletion recovery, sidebar back navigation, and settings reversal. The notebook's single empty cell was not executed or changed.
 
-The live check exposed a stale Cancel control after ZIP completion; this release fixes it and includes two regression tests for post-completion and pre-worker cancellation. Reload confirmation of those final UI fixes remains pending. The first optional managed-download attempt reported missing Chrome permission and retained its runtime ZIP for recovery; completed download cancellation/removal has not been live-verified.
+The live check exposed a stale Cancel control after ZIP completion; this release fixes it and includes two regression tests for post-completion and pre-worker cancellation. After reload, startup cancellation left no new archive or ready history action and completed actions no longer offered Cancel. Optional managed-download attempts still reported missing Chrome permission and retained their runtime ZIPs for recovery; successful managed downloads and browser cancellation/removal have not been live-verified.
 
 Recovery data consumes disk space and is scoped to the current runtime journal. Runtime deletion, missing recovery data, arbitrary notebook/terminal changes, and earlier untracked actions cannot be undone. Mounted Drive, other runtime types, large datasets, and all cancellation timings have not been live-verified.
 
