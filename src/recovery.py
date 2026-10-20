@@ -511,7 +511,7 @@ def main():
         store = Store()
         with store.locked():
             if args['action'] == 'list':
-                result = {'records': store.list()}
+                result = {'records': store.list(), 'server_time': time.time()}
             elif args['action'] == 'undo':
                 result = store.undo(args['id'])
             elif args['action'] == 'native':

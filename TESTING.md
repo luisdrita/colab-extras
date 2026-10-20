@@ -1,3 +1,15 @@
+# Version 0.9.1 — 20 October 2026
+
+- The toolbar Undo arrow now reverses exactly the newest supported action without opening a dialog. File recovery, sidebar navigation, and extension settings share chronological selection; runtime timestamps are normalized to the browser clock.
+- Conflicts remain on the latest action instead of falling through to older actions. Empty history and errors use a nonmodal sidebar status. Duplicate clicks during recovery are ignored.
+- Selective recovery and settings moved to **History and settings…** in file/folder context menus.
+- 93 Python tests and 54 JavaScript tests pass. Ten new tests cover ordering, clock differences, conflicts, empty history, lookup failure, rapid clicks, and the toolbar binding.
+- Chrome browser checks against the exact generated bundle in the simulated-Colab harness passed: a single toolbar click undid the newest ZIP action, a second click reported empty history, navigation returned to `/content`, and a setting change was restored. Each direct Undo had zero open dialogs. The separate History and settings menu remained usable, and reopening it confirmed the setting was restored.
+- The installed unpacked folders were updated in place. Chrome must reload the extension and refresh Colab to run 0.9.1 there. The hosted runtime checks listed for 0.9.0 remain historical evidence for the unchanged recovery operations; they do not establish the new toolbar interaction in hosted Colab.
+- Chrome Web Store submission and optional managed-download integration remain subject to the limits recorded below.
+
+---
+
 # Version 0.9.0 — 20 October 2026
 
 ## Completed verification

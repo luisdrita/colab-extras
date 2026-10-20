@@ -5,22 +5,33 @@ const fs=require('node:fs');
 const {webcrypto}=require('node:crypto');
 const core=require('../src/core.cjs');
 const code=fs.readFileSync(require('node:path').join(__dirname,'../src/undo.js'),'utf8').split('const undoObserver=')[0];
-function setup(){
-  const calls=[],raw=[];
+function setup(options={}){
+  const calls=[],raw=[],feedback=[],saved=[];
+  const clock={now:100000};
+  class TestDate extends Date{static now(){return clock.now;}}
   const runtime={};
   const xhr={fetch:async(url,options)=>{raw.push({url,options});return new Response('{}');}};
   const ctx={kernel:{runtime},runtime,xhr};
   const tree={files:{rootPath:'content',write(){},getFile:async()=>({isDirectory:true})},refresh:async()=>{}};
   const sandbox={...core,crypto:webcrypto,URL,Response,Headers,AbortSignal,Uint8Array,btoa,
-    setTimeout,clearTimeout,location:{origin:'https://colab.research.google.com'},
-    localStorage:{getItem:()=>null},jobs:new Map(),
-    document:{querySelector:()=>({currentTree:tree})},
+    Date:TestDate,setTimeout,clearTimeout,location:{origin:'https://colab.research.google.com'},
+    localStorage:{getItem:()=>null,setItem:(key,value)=>saved.push({key,value})},jobs:new Map(),
+    document:{querySelector:selector=>selector==='colab-file-browser'?{currentTree:tree}:null},
     context:()=>({...ctx,runtime:ctx.kernel.runtime}),
-    fakeRecovery:async args=>{calls.push(args);return {id:args.id||'test-id',state:args.body?.chunk>0?'pending':'ready',path:args.path,conflicts:[]};}};
+    fakeFeedback:(text,error)=>feedback.push({text,error}),
+    fakeRecovery:async args=>{
+      calls.push(args);
+      if(args.action==='list'){
+        if(options.listError)throw new Error(options.listError);
+        await options.beforeList?.();
+        return {records:options.records||[],server_time:options.serverTime??clock.now/1000,receivedAt:clock.now};
+      }
+      return {id:args.id||'test-id',state:args.body?.chunk>0?'pending':'ready',path:args.path,conflicts:options.conflicts||[]};
+    }};
   vm.createContext(sandbox);
-  vm.runInContext(code+'\nrecoveryCall=fakeRecovery;',sandbox);
+  vm.runInContext(code+'\nrecoveryCall=fakeRecovery;undoFeedback=fakeFeedback;',sandbox);
   sandbox.hookNativeFiles();
-  return {sandbox,tree,ctx,calls,raw};
+  return {sandbox,tree,ctx,calls,raw,feedback,saved,clock};
 }
 test('native rename and root folder creation are protected',async()=>{
   const {ctx,calls,raw}=setup();
@@ -78,4 +89,93 @@ test('reconnecting the runtime renews the native hook without nesting wrappers',
   await ctx.xhr.fetch('/api/contents/content/a',{method:'DELETE'});
   assert.equal(calls.length,1);
   assert.equal(calls[0].method,'DELETE');
+});
+test('one click undoes only the latest file action, even with unordered history',async()=>{
+  const {sandbox,calls,feedback}=setup({records:[
+    {id:'older',time:80,label:'Older file'}, {id:'latest',time:90,label:'Latest file'}
+  ]});
+  await sandbox.undoLastAction();
+  assert.deepEqual(calls.filter(c=>c.action==='undo').map(c=>c.id),['latest']);
+  assert.equal(feedback.at(-1).text,'Undone: Latest file.');
+});
+test('a newer settings change is undone before a file change',async()=>{
+  const {sandbox,calls,saved,clock}=setup({records:[{id:'file',time:90,label:'File'}]});
+  sandbox.changeUndoPreference('overwrite',true);
+  clock.now=101000;
+  await sandbox.undoLastAction();
+  assert.equal(calls.filter(c=>c.action==='undo').length,0);
+  assert.equal(JSON.parse(saved.at(-1).value).overwrite,false);
+  await sandbox.undoLastAction();
+  assert.equal(calls.at(-1).id,'file');
+});
+test('sidebar navigation participates in the same last-action order',async()=>{
+  const {sandbox,tree,calls,clock}=setup({records:[{id:'file',time:90,label:'File'}]});
+  sandbox.observeLocation();tree.files.rootPath='content/subfolder';sandbox.observeLocation();
+  clock.now=101000;
+  await sandbox.undoLastAction();
+  assert.equal(tree.files.rootPath,'content');
+  assert.equal(calls.filter(c=>c.action==='undo').length,0);
+  await sandbox.undoLastAction();
+  assert.equal(calls.at(-1).id,'file');
+});
+test('runtime clock differences do not put an older file ahead of newer navigation',async()=>{
+  const {sandbox,tree,clock,calls}=setup({serverTime:1000,records:[{id:'file',time:980,label:'File'}]});
+  sandbox.observeLocation();tree.files.rootPath='content/subfolder';sandbox.observeLocation();
+  clock.now=101000;
+  await sandbox.undoLastAction();
+  assert.equal(tree.files.rootPath,'content');
+  assert.equal(calls.filter(c=>c.action==='undo').length,0);
+});
+test('a newer file is undone before an older settings change',async()=>{
+  const {sandbox,calls,clock,saved}=setup({records:[{id:'file',time:95,label:'File'}]});
+  clock.now=90000;sandbox.changeUndoPreference('overwrite',true);clock.now=100000;
+  await sandbox.undoLastAction();
+  assert.equal(calls.at(-1).id,'file');
+  assert.equal(JSON.parse(saved.at(-1).value).overwrite,true);
+});
+test('conflicts stop at the latest action without undoing older files',async()=>{
+  const {sandbox,calls,feedback}=setup({records:[
+    {id:'latest',time:90,label:'Latest file'}, {id:'older',time:80,label:'Older file'}
+  ],conflicts:[{path:'/content/edited',reason:'Changed after creation'}]});
+  await sandbox.undoLastAction();
+  assert.deepEqual(calls.filter(c=>c.action==='undo').map(c=>c.id),['latest']);
+  assert.match(feedback.at(-1).text,/Later changes were preserved/);
+  assert.equal(feedback.at(-1).error,true);
+});
+test('empty history reports nothing to undo without creating a dialog',async()=>{
+  const {sandbox,calls,feedback}=setup();
+  sandbox.document.createElement=()=>{throw Error('No modal may be created');};
+  await sandbox.undoLastAction();
+  assert.equal(calls.filter(c=>c.action==='undo').length,0);
+  assert.equal(feedback.at(-1).text,'Nothing to undo.');
+});
+test('history lookup failure does not fall back to an older local action',async()=>{
+  const {sandbox,saved,feedback}=setup({listError:'Runtime unavailable'});
+  sandbox.changeUndoPreference('overwrite',true);
+  await sandbox.undoLastAction();
+  assert.equal(JSON.parse(saved.at(-1).value).overwrite,true);
+  assert.equal(feedback.at(-1).text,'Runtime unavailable');
+});
+test('a rapid second click cannot undo a second action',async()=>{
+  let releaseList;
+  const gate=new Promise(resolve=>{releaseList=resolve;});
+  const {sandbox,calls}=setup({records:[{id:'file',time:90,label:'File'}],beforeList:()=>gate});
+  const first=sandbox.undoLastAction();
+  await sandbox.undoLastAction();
+  releaseList();await first;
+  assert.equal(calls.filter(c=>c.action==='undo').length,1);
+});
+test('the toolbar click invokes direct Undo and never opens history',async()=>{
+  const {sandbox,calls}=setup({records:[{id:'file',time:90,label:'File'}]});
+  let installed;
+  const refresh={after:button=>{installed=button;}};
+  sandbox.document.querySelector=selector=>selector==='.file-tree-refresh'?refresh:
+    selector==='colab-file-browser'?{currentTree:{files:{rootPath:'content'},refresh:async()=>{}}}:
+    selector==='[data-cfz-undo-button]'?installed:null;
+  sandbox.document.createElement=()=>({dataset:{},style:{},handlers:{},
+    setAttribute(){},removeAttribute(){},append(){},addEventListener(name,handler){this.handlers[name]=handler;}});
+  vm.runInContext('showUndo=()=>{throw new Error("History must not open");};',sandbox);
+  sandbox.installUndoButton();
+  await installed.handlers.click({isTrusted:true});
+  assert.equal(calls.filter(c=>c.action==='undo').length,1);
 });

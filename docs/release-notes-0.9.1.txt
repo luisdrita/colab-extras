@@ -1,0 +1,11 @@
+Colab Extras 0.9.1 — One-click Undo
+
+Click the backwards arrow beside Refresh to undo the most recent supported action immediately. The button no longer opens a dialog. Each click reverses one file change, sidebar path change, or extension preference change, in chronological order.
+
+Conflicts preserve later edits and stop at that action. Empty history and errors appear as short sidebar messages. Repeated clicks while recovery is running do not start additional undos.
+
+Selective recovery and preferences remain available under History and settings… in a file or folder's right-click menu. Recovery scope, retained backups, and optional browser-download management are unchanged.
+
+Validation: 93 Python tests and 54 JavaScript tests, including newest-action selection, mixed file/settings/navigation order, runtime clock differences, conflict handling, empty history, failed lookup, rapid clicks, and direct toolbar binding. Browser verification status is recorded in TESTING.md.
+
+Chrome Web Store submission remains manual because automated access to the developer dashboard was blocked. This GitHub release does not claim Store publication.
