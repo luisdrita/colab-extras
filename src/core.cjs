@@ -54,7 +54,7 @@ async function request(ctx, path, method = 'GET', body) {
   assertRuntime(ctx);
   const opts = {method, headers: new Headers({'Content-Type':'application/json'}), signal: AbortSignal.timeout(30000)};
   if (body !== undefined) opts.body = JSON.stringify(body);
-  const response = await ctx.xhr.fetch(path, opts);
+  const response = await (ctx.xhr.cfzOriginalFetch || ctx.xhr.fetch.bind(ctx.xhr))(path, opts);
   if (!response.ok) {
     const error = new Error(`Colab request failed (${response.status}) for ${path.split('?')[0]}.`);
     error.status = response.status;

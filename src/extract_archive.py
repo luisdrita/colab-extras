@@ -1,5 +1,5 @@
 """Extract beside an archive; never overwrite or follow links from an archive."""
-import contextlib, json, os, pathlib, signal, stat, sys, tarfile, time, zipfile
+import contextlib, hashlib, json, os, pathlib, signal, stat, sys, tarfile, time, zipfile
 
 source = pathlib.Path(sys.argv[1]).absolute()
 job = pathlib.Path(sys.argv[2]).absolute()
@@ -7,10 +7,21 @@ started = time.monotonic()
 files = folders = done = 0
 MAX_ENTRIES = 100000
 DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+recovery = None
+overwrite = '--overwrite' in sys.argv
+overwrite_expected = {}
+if '--undo' in sys.argv:
+    from recovery import Store, Journal
+    recovery_store = Store()
+    recovery_lock = recovery_store.locked()
+    recovery_lock.__enter__()
+    recovery = Journal(recovery_store, 'Extract: ' + source.name)
 
 def report(**data):
     data.update(path=str(source), destination=str(source.parent), files=files,
                 folders=folders, done=done, elapsed=round(time.monotonic() - started, 1))
+    if recovery:
+        data['undo'] = recovery.id
     tmp = job / 'status.tmp'
     tmp.write_text(json.dumps(data), encoding='utf-8')
     os.replace(tmp, job / 'status.json')
@@ -36,13 +47,17 @@ def directory(root_fd, parts, create=False):
     """Resolve every component relative to an open directory, without symlinks."""
     global folders
     fd = os.dup(root_fd)
+    traversed = []
     try:
         for part in parts:
+            traversed.append(part)
             check_cancelled()
             if create:
                 try:
                     os.mkdir(part, mode=0o755, dir_fd=fd)
                     folders += 1
+                    if recovery:
+                        recovery.created(source.parent.joinpath(*traversed), directory=True)
                 except FileExistsError:
                     pass
             child = os.open(part, DIR_FLAGS, dir_fd=fd)
@@ -58,6 +73,11 @@ def check_destination(root_fd, parts, is_dir):
             try:
                 existing = os.stat(parts[-1], dir_fd=parent, follow_symlinks=False)
             except FileNotFoundError:
+                return
+            if overwrite and recovery and not is_dir and stat.S_ISREG(existing.st_mode):
+                if source.parent.joinpath(*parts) == source:
+                    raise ValueError('Extraction cannot replace its own archive.')
+                overwrite_expected[parts] = recovery.store.fingerprint(source.parent.joinpath(*parts))
                 return
             if not (is_dir and stat.S_ISDIR(existing.st_mode)):
                 raise FileExistsError('Already exists; nothing was overwritten: ' + '/'.join(parts))
@@ -120,8 +140,17 @@ def extract(root_fd, archive_file):
             with directory(root_fd, parts if is_dir else parts[:-1], create=True) as parent:
                 if is_dir:
                     continue
+                destination = source.parent.joinpath(*parts)
+                replaced = None
+                if recovery and overwrite and os.path.lexists(destination):
+                    if parts not in overwrite_expected or recovery.store.fingerprint(destination) != overwrite_expected[parts]:
+                        raise RuntimeError('Destination changed after extraction preflight; it was preserved.')
+                    replaced = recovery.remove(destination, expected=overwrite_expected[parts])
                 # O_EXCL also rejects symlinks and files created after preflight.
                 fd = os.open(parts[-1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=parent)
+                identity = os.fstat(fd)
+                digest = hashlib.sha256()
+                copied = 0
                 try:
                     with os.fdopen(fd, 'wb') as output:
                         inp = archive.open(item) if is_zip else archive.extractfile(item)
@@ -135,6 +164,7 @@ def extract(root_fd, archive_file):
                                 if copied + len(chunk) > size:
                                     raise ValueError('Archive entry exceeds its declared size')
                                 output.write(chunk)
+                                digest.update(chunk)
                                 copied += len(chunk)
                                 done += len(chunk)
                                 if time.monotonic() - last > 0.5:
@@ -143,9 +173,21 @@ def extract(root_fd, archive_file):
                             if copied != size:
                                 raise ValueError('Archive entry is truncated')
                 except BaseException:
-                    os.unlink(parts[-1], dir_fd=parent)
+                    now = os.stat(parts[-1], dir_fd=parent, follow_symlinks=False)
+                    if (now.st_dev, now.st_ino) == (identity.st_dev, identity.st_ino):
+                        if not recovery or recovery.store.fingerprint(destination).get('hash') == digest.hexdigest():
+                            os.unlink(parts[-1], dir_fd=parent)
                     raise
                 files += 1
+                if recovery:
+                    after = recovery.store.fingerprint(destination)
+                    if after['identity'][:2] != [identity.st_dev, identity.st_ino] or after.get('hash') != digest.hexdigest():
+                        raise RuntimeError('An extracted file changed during extraction; it was preserved.')
+                    if replaced:
+                        replaced['after'] = after
+                        recovery.save()
+                    else:
+                        recovery.created(destination, expected=after)
         return total
 
 for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
@@ -172,12 +214,18 @@ try:
         after = os.fstat(fd)
         if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
             raise RuntimeError('Archive changed during extraction; check the extracted files')
+    if recovery:
+        recovery.finish()
     report(state='extracted', total=total)
 except BaseException as exc:
+    rollback = recovery_store.undo(recovery.id) if recovery else None
     report(state='cancelled' if isinstance(exc, InterruptedError) else 'error',
-           error=str(exc), partial=bool(files or folders))
+           error=str(exc), partial=bool(rollback['conflicts']) if rollback else bool(files or folders),
+           recovery=rollback)
 finally:
     try:
         (job / 'pid').unlink()
     except OSError:
         pass
+    if recovery:
+        recovery_lock.__exit__(None, None, None)
