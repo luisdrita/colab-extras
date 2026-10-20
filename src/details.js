@@ -27,7 +27,7 @@ function showDetailsDialog(job){
   const sizeMetric=node('div',{},node('dt',{},'Total file size'),node('dd',{},node('span',{id:'size'}),node('span',{id:'exact'})));
   const dialog=node('dialog',{'aria-labelledby':'title','aria-describedby':'folder-path'},
     node('header',{},node('h2',{id:'title'},'Folder details'),node('button',{id:'close','aria-label':'Close folder details'},'×')),
-    node('div',{class:'content'},node('p',{class:'path',id:'folder-path'}),node('div',{class:'status-row'},node('span',{id:'scan-progress'}),node('p',{class:'status',id:'status',role:'status','aria-live':'polite'},'Scanning folder…')),
+    node('div',{class:'content'},node('p',{class:'path',id:'folder-path'}),node('div',{class:'status-row'},node('span',{id:'scan-progress'}),node('p',{class:'status',id:'status',role:'status','aria-live':'polite',hidden:''},'Scanning folder…')),
     node('div',{id:'result',hidden:''},node('div',{id:'warning',class:'warning',hidden:''}),
       node('dl',{},sizeMetric,metric('Files','files'),metric('Subfolders','folders'),metric('Symbolic links','links')),
       node('h3',{},'Largest files'),node('p',{id:'empty',class:'muted',hidden:''},'No regular files found.'),
@@ -52,10 +52,12 @@ function showDetailsDialog(job){
   },error(message){
     view.settled=true;if(view.closed)return;
     get('scan-progress').hidden=true;progress.element.remove();
+    get('status').hidden=false;
     get('status').textContent=message;get('status').classList.add('error');get('done').textContent='Close';
   },render(result){
     view.settled=true;if(view.closed)return;
     get('scan-progress').hidden=true;progress.element.remove();
+    get('status').hidden=false;
     get('status').textContent=result.skipped?'Scan finished with unreadable or changed items.':'Scan complete';
     get('result').hidden=false;get('done').textContent='Close';
     get('size').textContent=formatBytes(result.bytes);get('exact').textContent=result.bytes.toLocaleString()+' bytes';

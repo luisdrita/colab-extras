@@ -171,7 +171,7 @@ function createProgress(label){
 // File mutations retain runtime-local recovery data.
 if (document.querySelector('meta[name="colab-folder-zip-version"]')) return;
 const marker=document.createElement('meta');
-marker.name='colab-folder-zip-version';marker.content='0.9.2';document.head.append(marker);
+marker.name='colab-folder-zip-version';marker.content='0.9.3';document.head.append(marker);
 const jobs=new Map();
 let selected=null;
 function context(){
@@ -217,6 +217,9 @@ function setStatus(job,label,detail=label,error=false,progress=null){
   badge.title=detail;
   badge.style.color=error?'var(--colab-error-color,#b3261e)':'var(--colab-secondary-text-color,inherit)';
   const busy=!error&&!job.finished&&jobs.get(job.path)===job;
+  // Running actions show only the ring; its accessible label and the tooltip
+  // retain the operation detail. Final results and errors stay readable.
+  text.hidden=busy;
   if(busy){
     if(!badge.cfzProgress){badge.cfzProgress=createProgress(label);badge.prepend(badge.cfzProgress.element);}
     badge.cfzProgress.update(label,progress);
@@ -459,7 +462,7 @@ function showDetailsDialog(job){
   const sizeMetric=node('div',{},node('dt',{},'Total file size'),node('dd',{},node('span',{id:'size'}),node('span',{id:'exact'})));
   const dialog=node('dialog',{'aria-labelledby':'title','aria-describedby':'folder-path'},
     node('header',{},node('h2',{id:'title'},'Folder details'),node('button',{id:'close','aria-label':'Close folder details'},'×')),
-    node('div',{class:'content'},node('p',{class:'path',id:'folder-path'}),node('div',{class:'status-row'},node('span',{id:'scan-progress'}),node('p',{class:'status',id:'status',role:'status','aria-live':'polite'},'Scanning folder…')),
+    node('div',{class:'content'},node('p',{class:'path',id:'folder-path'}),node('div',{class:'status-row'},node('span',{id:'scan-progress'}),node('p',{class:'status',id:'status',role:'status','aria-live':'polite',hidden:''},'Scanning folder…')),
     node('div',{id:'result',hidden:''},node('div',{id:'warning',class:'warning',hidden:''}),
       node('dl',{},sizeMetric,metric('Files','files'),metric('Subfolders','folders'),metric('Symbolic links','links')),
       node('h3',{},'Largest files'),node('p',{id:'empty',class:'muted',hidden:''},'No regular files found.'),
@@ -484,10 +487,12 @@ function showDetailsDialog(job){
   },error(message){
     view.settled=true;if(view.closed)return;
     get('scan-progress').hidden=true;progress.element.remove();
+    get('status').hidden=false;
     get('status').textContent=message;get('status').classList.add('error');get('done').textContent='Close';
   },render(result){
     view.settled=true;if(view.closed)return;
     get('scan-progress').hidden=true;progress.element.remove();
+    get('status').hidden=false;
     get('status').textContent=result.skipped?'Scan finished with unreadable or changed items.':'Scan complete';
     get('result').hidden=false;get('done').textContent='Close';
     get('size').textContent=formatBytes(result.bytes);get('exact').textContent=result.bytes.toLocaleString()+' bytes';
