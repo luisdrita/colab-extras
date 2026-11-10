@@ -25,11 +25,12 @@ function harness({granted=true,owner='extension-id'}={}){
 }
 const download={action:'download',url:'blob:https://colab.research.google.com/abc',name:'test.zip',operation:'11111111-1111-4111-8111-111111111111'};
 test('managed downloads retain an exact operation association',async()=>{
-  const {send}=harness();
+  const {send,calls}=harness();
   const response=await send(download);
   assert.equal(response.result.id,1);
   const list=await send({action:'list'},true);
   assert.equal(list.result.downloads[0].operation,download.operation);
+  assert.equal(calls.find(c=>c[0]==='download')[1].saveAs,false);
 });
 test('a webpage cannot remove a local download',async()=>{
   const {send,calls}=harness();await send(download);

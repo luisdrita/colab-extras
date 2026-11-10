@@ -8,7 +8,7 @@ body[data-theme="dark"]{color-scheme:dark;background:#131314;color:#e3e3e3;--col
 body[data-theme="dark"] aside,body[data-theme="dark"] .goog-menu{background:#282a2c;border-color:#444746}body[data-theme="dark"] colab-file-view:hover,body[data-theme="dark"] .goog-menuitem-highlight{background:#37393b}label{display:inline-block;margin-right:12px;margin-bottom:8px}
 @media(max-width:600px){body{margin:16px}h1{font-size:24px}aside{max-width:100%}select{max-width:100%}}
 </style>
-<p>This page loads the exact extension bundle with a fake runtime. Right-click an archive for Extract here, or a folder for existing actions. Extraction preserves existing files by default. Extraction backend tests run separately on local files; this page simulates the runtime.</p>
+<p>This page loads the exact extension bundle with a fake runtime. Command-click (Mac) or Ctrl-click (Windows/Linux) file and folder rows to select multiple items. Right-click a selected row and choose Delete selected items. Right-click an archive for Extract here, or a folder for existing actions. Backend tests run separately on disposable local files; this page simulates the runtime.</p>
 <label>Scenario <select id="scenario"><option value="normal">Success</option><option value="slow">Slow compression / cancel</option><option value="error">Compression error</option><option value="blocked">Terminal unavailable</option><option value="download-error">Download error</option><option value="delete-error">Deletion permission error</option><option value="details-many">Details: ten long filenames</option><option value="details-empty">Details: empty folder</option><option value="details-partial">Details: unreadable contents</option><option value="details-error">Details: scan error</option><option value="details-slow">Details: slow scan / cancel</option></select></label>
 <label>Theme <select id="theme"><option value="light">Light</option><option value="dark">Colab dark</option></select></label>
 <button id="refresh-rows">Refresh file rows</button>
@@ -28,45 +28,26 @@ document.getElementById('theme').addEventListener('change',event=>{document.body
 const events=document.getElementById('events');
 const log=text=>{events.textContent+='\n'+text;events.scrollTop=events.scrollHeight;};
 const state={runtime:{},job:null,ticks:0,cancelled:false,deleted:new Set()};
-const recoveryArgs=new Map();
-const recoveryHistory=[{id:crypto.randomUUID(),label:'Create ZIP: results (simulated)',time:Date.now()/1000,state:'ready'}];
-customElements.define('md-icon-button',class extends HTMLElement{
- connectedCallback(){this.tabIndex=0;this.setAttribute('role','button');this.setAttribute('aria-label',this.getAttribute('data-aria-label')||this.title);this.style.cssText='display:inline-flex;vertical-align:middle;align-items:center;justify-content:center;width:36px;height:36px;border-radius:50%;cursor:pointer';this.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();this.click();}});}
-});
-customElements.define('md-icon',class extends HTMLElement{
- connectedCallback(){if(this.textContent==='refresh'){this.textContent='↻';this.style.display='inline-block';this.style.fontSize='26px';}}
-});
+const fileActionArgs=new Map();
 const scenario=()=>document.getElementById('scenario').value;
-for(const [value,text] of [['extract-slow','Extraction / cancel'],['extract-error','Extraction conflict'],['extract-partial','Extraction partial error'],['saving','Saving ZIP / hold'],['download-slow','Downloading / hold'],['delete-slow','Deleting / hold'],['unknown','Unknown progress / hold'],['undo-slow','Undo / hold'],['undo-error','Undo error']]){
+for(const [value,text] of [['bulk-first-complete','Bulk: first complete, remaining busy'],['bulk-last-fails','Bulk: last item fails'],['bulk-partial','Bulk: one item fails'],['bulk-disconnect','Bulk: connection lost'],['extract-slow','Extraction / cancel'],['extract-error','Extraction error'],['extract-partial','Extraction partial error'],['saving','Saving ZIP / hold'],['download-slow','Downloading / hold'],['delete-slow','Deleting / hold'],['unknown','Unknown progress / hold']]){
  const option=document.createElement('option');option.value=value;option.textContent=text;document.getElementById('scenario').append(option);
 }
 const response=(body,status=200)=>Promise.resolve(new Response(JSON.stringify(body),{status}));
 const kernel={runtime:state.runtime,runtimeProxy:{createSocket:path=>({
  connect:async()=>{log('Socket '+path);},stop:()=>log('Own terminal closed'),
- sendString:text=>{const [type,command]=JSON.parse(text);if(type!=='stdin')throw Error('Bad protocol');const args=command.match(/'([^']*)'/g).map(s=>s.slice(1,-1));state.job={path:args[1],dir:args[2],kind:args[0].endsWith('recovery.py')?'recovery':args[0].endsWith('extract_archive.py')?'extract':args[0].endsWith('folder_details.py')?'details':args[0].endsWith('delete_folder.py')?'delete':'zip'};state.ticks=0;state.cancelled=false;log('Started '+state.job.kind+' for '+state.job.path);}
+ sendString:text=>{const [type,command]=JSON.parse(text);if(type!=='stdin')throw Error('Bad protocol');const args=command.match(/'([^']*)'/g).map(s=>s.slice(1,-1));state.job={path:args[1],dir:args[2],kind:args[0].endsWith('extract_archive.py')?'extract':args[0].endsWith('folder_details.py')?'details':args[0].endsWith('delete_folder.py')?'delete':'zip'};state.ticks=0;state.cancelled=false;log('Started '+state.job.kind+' for '+state.job.path);}
 })},getKernelXhr:()=>({fetch:async(path,opts)=>{
  if(path==='/api/terminals'&&opts.method==='POST')return scenario()==='blocked'?response({},403):response({name:'test-session'});
  if(opts.method==='DELETE'){log('Removed '+path);return response({});}
- if(opts.method==='PUT'){if(path.endsWith('/cancel'))state.cancelled=true;if(path.endsWith('/args.json'))recoveryArgs.set('/'+decodeURIComponent(path.slice('/api/contents/'.length)),JSON.parse(JSON.parse(opts.body).content));return response({});}
+ if(opts.method==='PUT'){if(path.endsWith('/cancel'))state.cancelled=true;if(path.endsWith('/args.json'))fileActionArgs.set('/'+decodeURIComponent(path.slice('/api/contents/'.length)),JSON.parse(JSON.parse(opts.body).content));return response({});}
  if(path.startsWith('/api/contents/'))return response({type:/\.(zip|tar|gz|tgz)\?/.test(path)?'file':'directory'});
  if(path.startsWith('/files/')){
    state.ticks++;
-   if(state.job.kind==='recovery'){
-     const args=recoveryArgs.get(state.job.path);
-     if(args.action==='list')return response({ok:true,records:recoveryHistory,server_time:Date.now()/1000});
-     if(args.action==='undo'){
-       if(scenario()==='undo-slow')return response({ok:true,running:true});
-       if(scenario()==='undo-error')return response({ok:false,error:'Recovery unavailable (simulated).'});
-       const index=recoveryHistory.findIndex(r=>r.id===args.id);if(index>=0)recoveryHistory.splice(index,1);
-       return response({ok:true,id:args.id,state:'undone',conflicts:[]});
-     }
-     const record={id:crypto.randomUUID(),label:args.label,time:Date.now()/1000,state:'ready'};
-     recoveryHistory.push(record);return response({ok:true,...record,path:args.path});
-   }
    if(state.job.kind==='extract'){
      const result={path:state.job.path,destination:'/content',files:0,folders:0,done:0,total:100};
      if(state.cancelled)return response({...result,state:'cancelled',error:'Extraction cancelled',partial:false});
-     if(scenario()==='extract-error')return response({...result,state:'error',error:'Already exists; nothing was overwritten: result.csv',partial:false});
+     if(scenario()==='extract-error')return response({...result,state:'error',error:'Archive checksum failed',partial:false});
      if(scenario()==='extract-partial')return response({...result,state:'error',error:'Archive entry is truncated',partial:true,files:1});
      if(scenario()==='extract-slow'||state.ticks<3)return response({...result,state:'extracting',done:Math.min(state.ticks*20,80)});
      log('Extracted beside archive: '+state.job.path);
@@ -82,6 +63,16 @@ const kernel={runtime:state.runtime,runtimeProxy:{createSocket:path=>({
        errors:partial?[{path:'private-data',error:'Permission denied'}]:[]};
      if(!scanning)log('Folder details ready: '+state.job.path);
      return response(result);
+   }
+   if(state.job.kind==='delete'&&state.job.path.endsWith('/args.json')){
+     const plan=fileActionArgs.get(state.job.path);
+     const results=plan.map((item,index)=>scenario()==='delete-error'||(scenario()==='bulk-partial'&&index===0)||(scenario()==='bulk-last-fails'&&index===plan.length-1)
+       ?{path:item.path,deleted:false,error:'Permission denied fixture',partial:true}:{path:item.path,deleted:true});
+     if(scenario()==='bulk-disconnect'&&state.ticks>1)return response({error:'Connection lost'},503);
+     const completed=scenario()==='delete-slow'?0:scenario()==='bulk-first-complete'?Math.min(1,plan.length):Math.min(state.ticks,plan.length);
+     for(const item of results.slice(0,completed))if(item.deleted)state.deleted.add(item.path);
+     if(completed===plan.length)log('Bulk deletion complete: '+plan.map(item=>item.path).join(', '));
+     return response({state:completed===plan.length?'complete':'deleting',total:plan.length,completed,results:results.slice(0,completed)});
    }
    if(state.job.kind==='delete'){
      if(scenario()==='delete-error')return response({state:'error',error:'Permission denied: protected.txt',partial:true});
@@ -118,6 +109,22 @@ function openMenu(view,event){
  const menu=document.createElement('div');menu.id='context-menu';menu.className='goog-menu';menu.setAttribute('role','menu');menu.setAttribute('aria-label','More actions for '+(view.file.isDirectory?'folder':'file')+': '+view.file.name);
  menu.style.left=(event.clientX||300)+'px';menu.style.top=(event.clientY||300)+'px';
  const item=document.createElement('div');item.className='goog-menuitem';item.textContent='Open';item.setAttribute('role','menuitem');menu.append(item);
+ for(const label of ['Rename','Download','Copy path','Refresh']){
+  const native=document.createElement('div');native.className='goog-menuitem';native.textContent=label;native.setAttribute('role','menuitem');native.tabIndex=0;
+  native.addEventListener('mouseup',()=>log('NATIVE SINGLE COMMAND: '+label));menu.append(native);
+ }
+ const separator=document.createElement('div');separator.className='goog-menuseparator';separator.setAttribute('role','separator');menu.append(separator);
+ menu.addEventListener('keydown',event=>{if(['ArrowDown','ArrowUp','Home','End'].includes(event.key))log('NATIVE NAVIGATION');});
+ const remove=document.createElement('div');remove.className='goog-menuitem';remove.setAttribute('role','menuitem');remove.tabIndex=0;
+ const removeLabel=document.createElement('div');removeLabel.className='goog-menuitem-content';removeLabel.textContent='Delete '+(view.file.isDirectory?'folder':'file');remove.append(removeLabel);menu.append(remove);
+ // Native Closure controls can activate on mouseup, before click. Log a call
+ // so the multi-selection regression suite can prove it was intercepted.
+ remove.addEventListener('mousedown',event=>event.preventDefault());
+ remove.addEventListener('mouseup',()=>log('NATIVE SINGLE DELETE FIRED'));
+ remove.addEventListener('click',()=>log('NATIVE SINGLE DELETE CLICKED'));
+ remove.addEventListener('mouseenter',()=>remove.classList.add('goog-menuitem-highlight'));
+ remove.addEventListener('mouseleave',()=>remove.classList.remove('goog-menuitem-highlight'));
+ menu.addEventListener('keydown',event=>{if(event.key==='Enter'&&remove.classList.contains('goog-menuitem-highlight'))log('NATIVE SINGLE DELETE KEY FIRED');});
  // Colab's Closure popup disposes itself on blur. A focusable injected
  // item therefore disappears on mouse-down, before a normal click fires.
  menu.tabIndex=0;menu.addEventListener('blur',closeMenu);
@@ -125,15 +132,23 @@ function openMenu(view,event){
 }
 function wireFolder(view){
  const row=document.createElement('div');row.className='file-title-row';row.append(...view.childNodes);view.append(row);
+ for(const span of row.querySelectorAll('span'))span.classList.add('file-tree-name');
  view.file={path:view.dataset.path.replace(/^\//,''),name:view.dataset.path.split('/').pop(),isDirectory:!view.dataset.file};
  if(view.file.isDirectory){
+  const arrow=document.createElement('span');arrow.className='directory-icon';arrow.textContent='▸';row.prepend(arrow);
   view.classList.add('collapsed');view.childViews=[];
   const childFiles=document.createElement('div');childFiles.className='child-files';view.append(childFiles);
   row.setAttribute('role','button');row.setAttribute('aria-label','Toggle folder: '+view.file.name);row.tabIndex=0;
   view.refresh=async()=>{
    if(view.classList.contains('collapsed')||view.childViews.length||view.file.name==='nested')return;
-   const child=document.createElement('colab-file-view');child.dataset.path='/'+view.file.path+'/nested';
-   const label=document.createElement('span');label.textContent='📁 nested';child.append(label);childFiles.append(child);wireFolder(child);view.childViews.push(child);
+   const entries=[['nested',false]];
+   if(new URLSearchParams(location.search).has('nested-files')&&view.file.path==='content/results')entries.push(['first.txt',true],['second.txt',true],['keep.txt',true]);
+   for(const [name,isFile] of entries){
+    const child=document.createElement('colab-file-view');child.dataset.path='/'+view.file.path+'/'+name;
+    if(state.deleted.has(child.dataset.path))continue;
+    if(isFile)child.dataset.file='true';
+    const label=document.createElement('span');label.textContent=(isFile?'📄 ':'📁 ')+name;child.append(label);childFiles.append(child);wireFolder(child);view.childViews.push(child);
+   }
   };
   row.addEventListener('click',e=>{
    if(e.target.closest('.menu-button'))return;e.stopPropagation();
@@ -141,17 +156,18 @@ function wireFolder(view){
    else void view.refresh();
   });
  }
- view.addEventListener('contextmenu',e=>openMenu(view,e));view.querySelector('.menu-button')?.addEventListener('click',e=>openMenu(view,e));
+ view.addEventListener('contextmenu',e=>{e.stopPropagation();openMenu(view,e);});view.querySelector('.menu-button')?.addEventListener('click',e=>openMenu(view,e));
 }
 for(const view of document.querySelectorAll('colab-file-view'))wireFolder(view);
 document.getElementById('refresh-rows').addEventListener('click',()=>{
  for(const view of document.querySelectorAll('colab-file-view')){
   const fresh=document.createElement('colab-file-view');
   for(const attr of view.attributes)fresh.setAttribute(attr.name,attr.value);
-  for(const child of view.querySelector('.file-title-row').children)if(!child.hasAttribute('data-cfz-status'))fresh.append(child.cloneNode(true));
+  for(const child of view.querySelector('.file-title-row').children)if(!child.hasAttribute('data-cfz-status')&&!child.hasAttribute('data-cfz-select')&&!child.classList.contains('directory-icon'))fresh.append(child.cloneNode(true));
   view.replaceWith(fresh);wireFolder(fresh);
  }
  log('File rows replaced');
 });
 document.addEventListener('click',e=>{if(!e.target.closest('colab-file-view')&&!e.target.closest('[role="menu"]'))closeMenu();});
+document.addEventListener('keydown',event=>{if(event.key==='Delete'&&event.target.closest?.('.file-title-row'))log('NATIVE FILE DELETE KEY');});
 </script><script src="../extension/colab-zip.js"></script></html>

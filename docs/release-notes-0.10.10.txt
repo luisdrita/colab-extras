@@ -1,0 +1,5 @@
+Colab Extras 0.10.10
+
+The normal folder Delete action now uses the extension’s recursive worker, so non-empty directories can be deleted with all their contents. This works from the right-click menu, the folder menu button, and keyboard activation without confirmation dialogs. The separate Delete folder and contents entry is only used when Colab’s normal Delete entry is unavailable.
+
+Protected roots remain disabled. Multi-selection deletion, right-side loading circles, per-item progress, quiet completion, and the overlay-filesystem fix are retained. No new permissions.

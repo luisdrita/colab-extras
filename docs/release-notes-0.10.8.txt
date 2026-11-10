@@ -1,0 +1,5 @@
+Colab Extras 0.10.8
+
+Fixed bulk file deletion falsely reporting “A mounted file cannot be deleted” on Colab’s overlay filesystem. Ordinary files can report a different device ID from their parent directory without being mounted. Linux deletion now reads actual mount points from /proc/self/mountinfo.
+
+Actual file/directory mounts, same-device bind mounts and folders containing mounts remain protected. Mounted-filesystem contents remain available for ordinary deletion. No changes to Command/Ctrl selection, immediate actions, per-row loading circles or silent success. No new permissions.

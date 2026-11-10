@@ -1,0 +1,7 @@
+Colab Extras 0.10.0 — Remove Undo
+
+Removes the Undo button, operation history, native file-operation interception, sidebar and settings history, and background recovery checks. Completed operations no longer retain Undo backups.
+
+ZIP/download, extraction, folder details, copy/move, preferences, optional download management, circle-only progress, and quiet completion remain. Folder deletion is permanent after confirmation. Extraction preserves existing files by default; opt-in replacements are permanent once complete. Failed or cancelled extraction attempts rollback of the running operation while preserving later changes. Old recovery data is not deleted during upgrade.
+
+Validation: 72 Python tests and 41 JavaScript tests pass, plus simulated-Colab browser checks for ZIP, extraction, copy, no Undo controls, and deletion confirmation. Hosted Colab and installed-browser reload have not been verified. This is a local build, not a published release.

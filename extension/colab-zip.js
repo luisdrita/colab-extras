@@ -14,18 +14,18 @@ function normalizePath(value) {
 function deletionPath(value) {
   const path = normalizePath(value);
   if (!path.startsWith('/content/') || path.split('/').some(p => p.startsWith('.colab-folder-zip-'))) {
-    throw new Error('Choose a folder inside /content. Runtime roots and job folders cannot be deleted.');
+    throw new Error('Choose a file or folder inside /content. Runtime roots and job folders cannot be deleted.');
   }
   if (['/content/drive', '/content/drive/MyDrive', '/content/drive/Shareddrives'].includes(path) ||
       /^\/content\/drive\/Shareddrives\/[^/]+$/.test(path)) {
-    throw new Error('Drive roots cannot be deleted. Choose a folder inside the drive.');
+    throw new Error('Drive roots cannot be deleted. Choose a file or folder inside the drive.');
   }
   return path;
 }
 function conflictingJob(jobs, path, kind) {
   const scope = (p, k) => k === 'extract' ? p.slice(0, p.lastIndexOf('/')) || '/' : p;
   const overlaps = (a, b) => a === b || a === '/' || b === '/' || a.startsWith(b + '/') || b.startsWith(a + '/');
-  return [...jobs.values()].some(job => job.path === path ||
+  return [...jobs.values()].some(job => job.kind === 'bulk-delete' || job.path === path ||
     ((['delete', 'extract'].includes(kind) || ['delete', 'extract'].includes(job.kind)) &&
       overlaps(scope(path, kind), scope(job.path, job.kind))));
 }
@@ -56,7 +56,7 @@ async function request(ctx, path, method = 'GET', body) {
   assertRuntime(ctx);
   const opts = {method, headers: new Headers({'Content-Type':'application/json'}), signal: AbortSignal.timeout(30000)};
   if (body !== undefined) opts.body = JSON.stringify(body);
-  const response = await (ctx.xhr.cfzOriginalFetch || ctx.xhr.fetch.bind(ctx.xhr))(path, opts);
+  const response = await ctx.xhr.fetch(path, opts);
   if (!response.ok) {
     const error = new Error(`Colab request failed (${response.status}) for ${path.split('?')[0]}.`);
     error.status = response.status;
@@ -126,11 +126,40 @@ function validateDetails(result, source) {
   }
   return result;
 }
+function planDeletion(items) {
+  if (!Array.isArray(items) || !items.length) throw new Error('Select at least one file or folder.');
+  const unique = new Map();
+  for (const item of items) {
+    if (!item || typeof item.isDirectory !== 'boolean') throw new Error('Invalid deletion selection.');
+    const path = deletionPath(item.path);
+    if (unique.has(path) && unique.get(path).isDirectory !== item.isDirectory) throw new Error('Conflicting file types in selection.');
+    unique.set(path, {path, isDirectory:item.isDirectory});
+  }
+  return [...unique.values()].filter(item => {
+    let parent = item.path.slice(0, item.path.lastIndexOf('/'));
+    while (parent) {
+      if (unique.get(parent)?.isDirectory) return false;
+      parent = parent.slice(0, parent.lastIndexOf('/'));
+    }
+    return true;
+  });
+}
+function validateDeletionStatus(result, plan) {
+  if (!result || !['deleting','complete'].includes(result.state) || result.total !== plan.length ||
+      !Array.isArray(result.results) || result.completed !== result.results.length || result.completed > plan.length ||
+      (result.state === 'complete' && result.completed !== plan.length) ||
+      !result.results.every((item, index) => item?.path === plan[index].path && typeof item.deleted === 'boolean' &&
+        (item.deleted || (typeof item.error === 'string' && typeof item.partial === 'boolean')))) {
+    throw new Error('Unexpected deletion result. Refresh Files before retrying.');
+  }
+  return result;
+}
 
-const archiveSource = "import errno, json, os, pathlib, signal, stat, sys, time, zipfile\n\nsource = pathlib.Path(sys.argv[1]).absolute()\njob = pathlib.Path(sys.argv[2]).absolute()\nstatus = job / 'status.json'\narchive = job / (source.name + '.zip')\npartial = job / 'archive.partial'\nstarted = time.monotonic()\nrecovery = None\nif '--undo' in sys.argv:\n    from recovery import Store, Journal, verified_copy\n    recovery_store = Store()\n    recovery_lock = recovery_store.locked()\n    recovery_lock.__enter__()\n    recovery = Journal(recovery_store, 'Create ZIP: ' + source.name)\n\ndef report(**data):\n    data['elapsed'] = round(time.monotonic() - started, 1)\n    tmp = job / 'status.tmp'\n    tmp.write_text(json.dumps(data), encoding='utf-8')\n    os.replace(tmp, status)\n\ndef cancel(*args):\n    raise InterruptedError('Compression cancelled')\n\ndef check_cancelled():\n    if (job / 'cancel').exists():\n        cancel()\n\ndef walk_error(error):\n    raise error\n\ndef publish_archive(staged):\n    \"\"\"Keep the ZIP beside the source without ever replacing an existing path.\"\"\"\n    index = 0\n    while True:\n        check_cancelled()\n        suffix = '' if index == 0 else ' (' + str(index) + ')'\n        destination = source.parent / (source.name + suffix + '.zip')\n        if recovery:\n            # Journal the exact completed archive before publication. Atomic\n            # rename avoids exposing a partly copied ZIP on mounted filesystems.\n            bucket = recovery.bucket(destination)\n            expected = recovery_store.fingerprint(staged)\n            change = {'kind': 'write', 'path': str(destination), 'after': expected,\n                      'bucket': str(bucket), 'published': False}\n            recovery.data['changes'].append(change)\n            recovery.save()\n            try:\n                try:\n                    recovery_store.move(staged, destination, expected)\n                except OSError as error:\n                    if error.errno != errno.EXDEV:\n                        raise\n                    copied = bucket / ('zip-' + str(index))\n                    expected = verified_copy(recovery_store, staged, copied, expected)\n                    change['after'] = expected\n                    recovery.save()\n                    check_cancelled()\n                    recovery_store.move(copied, destination, expected)\n            except FileExistsError:\n                recovery.data['changes'].pop()\n                recovery.save()\n                index += 1\n                continue\n            change['published'] = True\n            recovery.save()\n            return destination\n        try:\n            # Same filesystem: publish the completed archive atomically.\n            os.link(staged, destination)\n            return destination\n        except FileExistsError:\n            index += 1\n            continue\n        except OSError as error:\n            if error.errno not in (errno.EXDEV, errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS):\n                raise\n        # Mounted Drive and other filesystems may not support hard links.\n        # Exclusive creation still prevents overwriting files or symlinks.\n        try:\n            output = destination.open('xb')\n        except FileExistsError:\n            index += 1\n            continue\n        try:\n            copied = 0\n            last_report = 0\n            size = staged.stat().st_size\n            with output, staged.open('rb') as inp:\n                while True:\n                    check_cancelled()\n                    chunk = inp.read(1024 * 1024)\n                    if not chunk:\n                        break\n                    output.write(chunk)\n                    copied += len(chunk)\n                    if time.monotonic() - last_report > 0.5:\n                        report(state='saving', done=copied, total=size)\n                        last_report = time.monotonic()\n            return destination\n        except BaseException:\n            destination.unlink(missing_ok=True)\n            raise\n\nsignal.signal(signal.SIGTERM, cancel)\nsignal.signal(signal.SIGINT, cancel)\nif hasattr(signal, 'SIGHUP'):\n    signal.signal(signal.SIGHUP, cancel)\ntry:\n    os.nice(10)\nexcept (AttributeError, OSError):\n    pass\ntry:\n    job.mkdir(mode=0o700, parents=True, exist_ok=True)\n    if not source.is_dir() or source.is_symlink() or source == pathlib.Path('/'):\n        raise ValueError('Select a regular folder below the filesystem root')\n    if source.name.startswith('.colab-folder-zip-'):\n        raise ValueError('Select your original folder, not a ZIP staging folder')\n    (job / 'pid').write_text(str(os.getpid()))\n    report(state='scanning')\n    entries = []\n    total = 0\n    for current, dirs, files in os.walk(source, followlinks=False, onerror=walk_error):\n        check_cancelled()\n        current = pathlib.Path(current)\n        dirs.sort(); files.sort()\n        # Do not include this extension's staging folders or follow symbolic links.\n        dirs[:] = [d for d in dirs if not d.startswith('.colab-folder-zip-')]\n        for name in list(dirs):\n            p = current / name\n            if p.is_symlink():\n                entries.append((p, p.lstat()))\n                dirs.remove(name)\n        entries.append((current, current.lstat()))\n        for name in files:\n            check_cancelled()\n            p = current / name\n            st = p.lstat()\n            if not (stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode)):\n                raise ValueError('Cannot archive special file: ' + str(p))\n            entries.append((p, st))\n            if stat.S_ISREG(st.st_mode): total += st.st_size\n    done = 0\n    last = 0\n    count = 0\n    with zipfile.ZipFile(partial, 'x', compression=zipfile.ZIP_DEFLATED, compresslevel=1, allowZip64=True, strict_timestamps=False) as z:\n        for p, before in entries:\n            check_cancelled()\n            rel = str(p.relative_to(source.parent))\n            if stat.S_ISLNK(before.st_mode):\n                info = zipfile.ZipInfo(rel)\n                info.create_system = 3\n                info.external_attr = (stat.S_IFLNK | 0o777) << 16\n                z.writestr(info, os.readlink(p).encode('utf-8'))\n                count += 1\n            elif stat.S_ISDIR(before.st_mode):\n                z.write(p, rel + '/')\n            else:\n                # Refuse a symlink swapped in after enumeration.\n                fd = os.open(p, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))\n                with os.fdopen(fd, 'rb') as inp:\n                    now = os.fstat(inp.fileno())\n                    if (before.st_ino, before.st_size, before.st_mtime_ns) != (now.st_ino, now.st_size, now.st_mtime_ns):\n                        raise RuntimeError('File changed before compression: ' + str(p))\n                    info = zipfile.ZipInfo.from_file(p, rel, strict_timestamps=False)\n                    info.compress_type = zipfile.ZIP_DEFLATED\n                    info._compresslevel = 1\n                    with z.open(info, 'w', force_zip64=True) as out:\n                        while True:\n                            check_cancelled()\n                            chunk = inp.read(1024 * 1024)\n                            if not chunk: break\n                            out.write(chunk); done += len(chunk)\n                            if time.monotonic() - last > 0.5:\n                                report(state='compressing', done=done, total=total, files=count)\n                                last = time.monotonic()\n                    after = os.fstat(inp.fileno())\n                    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):\n                        raise RuntimeError('File changed during compression: ' + str(p))\n                count += 1\n    os.replace(partial, archive)\n    saved = publish_archive(archive)\n    if recovery:\n        recovery.finish()\n    archive.unlink(missing_ok=True)\n    report(state='ready', archive=str(saved), size=saved.stat().st_size, done=done, total=total, files=count,\n           undo=recovery.id if recovery else None)\nexcept BaseException as exc:\n    try: partial.unlink(missing_ok=True)\n    except OSError: pass\n    try: archive.unlink(missing_ok=True)\n    except OSError: pass\n    if recovery:\n        recovery_store.undo(recovery.id)\n    report(state='cancelled' if isinstance(exc, InterruptedError) else 'error', error=str(exc))\nfinally:\n    try: (job / 'pid').unlink(missing_ok=True)\n    except OSError: pass\n    if recovery:\n        recovery_lock.__exit__(None, None, None)\n";
-const extractSource = "\"\"\"Extract beside an archive; never overwrite or follow links from an archive.\"\"\"\nimport contextlib, hashlib, json, os, pathlib, signal, stat, sys, tarfile, time, zipfile\n\nsource = pathlib.Path(sys.argv[1]).absolute()\njob = pathlib.Path(sys.argv[2]).absolute()\nstarted = time.monotonic()\nfiles = folders = done = 0\nMAX_ENTRIES = 100000\nDIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW\nrecovery = None\noverwrite = '--overwrite' in sys.argv\noverwrite_expected = {}\nif '--undo' in sys.argv:\n    from recovery import Store, Journal\n    recovery_store = Store()\n    recovery_lock = recovery_store.locked()\n    recovery_lock.__enter__()\n    recovery = Journal(recovery_store, 'Extract: ' + source.name)\n\ndef report(**data):\n    data.update(path=str(source), destination=str(source.parent), files=files,\n                folders=folders, done=done, elapsed=round(time.monotonic() - started, 1))\n    if recovery:\n        data['undo'] = recovery.id\n    tmp = job / 'status.tmp'\n    tmp.write_text(json.dumps(data), encoding='utf-8')\n    os.replace(tmp, job / 'status.json')\n\ndef cancel(*args):\n    raise InterruptedError('Extraction cancelled')\n\ndef check_cancelled():\n    if (job / 'cancel').exists():\n        cancel()\n\ndef member_path(name):\n    # Reject Windows separators/drives too, so archives remain unambiguous.\n    if not name or name.startswith('/') or '\\\\' in name or ':' in name or any(ord(c) < 32 or ord(c) == 127 for c in name):\n        raise ValueError('Unsafe archive path: ' + repr(name))\n    parts = tuple(p for p in name.split('/') if p not in ('', '.'))\n    if '..' in parts or any(p.startswith('.colab-folder-zip-') for p in parts):\n        raise ValueError('Unsafe archive path: ' + repr(name))\n    return parts\n\n@contextlib.contextmanager\ndef directory(root_fd, parts, create=False):\n    \"\"\"Resolve every component relative to an open directory, without symlinks.\"\"\"\n    global folders\n    fd = os.dup(root_fd)\n    traversed = []\n    try:\n        for part in parts:\n            traversed.append(part)\n            check_cancelled()\n            if create:\n                try:\n                    os.mkdir(part, mode=0o755, dir_fd=fd)\n                    folders += 1\n                    if recovery:\n                        recovery.created(source.parent.joinpath(*traversed), directory=True)\n                except FileExistsError:\n                    pass\n            child = os.open(part, DIR_FLAGS, dir_fd=fd)\n            os.close(fd)\n            fd = child\n        yield fd\n    finally:\n        os.close(fd)\n\ndef check_destination(root_fd, parts, is_dir):\n    try:\n        with directory(root_fd, parts[:-1]) as parent:\n            try:\n                existing = os.stat(parts[-1], dir_fd=parent, follow_symlinks=False)\n            except FileNotFoundError:\n                return\n            if overwrite and recovery and not is_dir and stat.S_ISREG(existing.st_mode):\n                if source.parent.joinpath(*parts) == source:\n                    raise ValueError('Extraction cannot replace its own archive.')\n                overwrite_expected[parts] = recovery.store.fingerprint(source.parent.joinpath(*parts))\n                return\n            if not (is_dir and stat.S_ISDIR(existing.st_mode)):\n                raise FileExistsError('Already exists; nothing was overwritten: ' + '/'.join(parts))\n    except FileNotFoundError:\n        pass\n\ndef extract(root_fd, archive_file):\n    global files, done\n    name = source.name.lower()\n    is_zip = name.endswith('.zip')\n    if not is_zip and not name.endswith(('.tar', '.tar.gz', '.tgz')):\n        raise ValueError('Supported archives: .zip, .tar, .tar.gz, .tgz')\n    opener = zipfile.ZipFile(archive_file) if is_zip else tarfile.open(fileobj=archive_file, mode='r:*')\n    with opener as archive:\n        entries, types, total = [], {}, 0\n        members = archive.infolist() if is_zip else archive\n        for index, item in enumerate(members):\n            check_cancelled()\n            if index >= MAX_ENTRIES:\n                raise ValueError('Archive exceeds the 100,000-entry limit')\n            parts = member_path(item.filename if is_zip else item.name)\n            is_dir = item.is_dir() if is_zip else item.isdir()\n            if is_zip:\n                mode = (item.external_attr >> 16) & 0xffff\n                kind = stat.S_IFMT(mode) if item.create_system == 3 else 0\n                if kind not in (0, stat.S_IFDIR if is_dir else stat.S_IFREG):\n                    raise ValueError('Archive links and special files are not supported')\n                if item.flag_bits & 1:\n                    raise ValueError('Password-protected ZIP files are not supported')\n                size = item.file_size\n            else:\n                if not (is_dir or item.isfile()) or item.issparse():\n                    raise ValueError('Archive links, sparse files, and special files are not supported')\n                size = item.size\n            if not parts:\n                if is_dir:\n                    continue\n                raise ValueError('Empty archive filename')\n            if parts in types and not (types[parts] and is_dir):\n                raise ValueError('Duplicate archive path: ' + '/'.join(parts))\n            types[parts] = is_dir\n            entries.append((item, parts, is_dir, size))\n            if not is_dir:\n                total += size\n            if index % 500 == 0:\n                report(state='checking', total=total)\n        # Validate the entire archive and all conflicts before creating anything.\n        for _, parts, is_dir, _ in entries:\n            check_cancelled()\n            if any(types.get(parts[:i]) is False for i in range(1, len(parts))):\n                raise ValueError('Archive uses a file as a directory: ' + '/'.join(parts))\n            check_destination(root_fd, parts, is_dir)\n        space = os.fstatvfs(root_fd)\n        if total > space.f_bavail * space.f_frsize:\n            raise OSError('Not enough free disk space to extract this archive')\n        report(state='extracting', total=total)\n        last = time.monotonic()\n        for item, parts, is_dir, size in entries:\n            check_cancelled()\n            with directory(root_fd, parts if is_dir else parts[:-1], create=True) as parent:\n                if is_dir:\n                    continue\n                destination = source.parent.joinpath(*parts)\n                replaced = None\n                if recovery and overwrite and os.path.lexists(destination):\n                    if parts not in overwrite_expected or recovery.store.fingerprint(destination) != overwrite_expected[parts]:\n                        raise RuntimeError('Destination changed after extraction preflight; it was preserved.')\n                    replaced = recovery.remove(destination, expected=overwrite_expected[parts])\n                # O_EXCL also rejects symlinks and files created after preflight.\n                fd = os.open(parts[-1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=parent)\n                identity = os.fstat(fd)\n                digest = hashlib.sha256()\n                copied = 0\n                try:\n                    with os.fdopen(fd, 'wb') as output:\n                        inp = archive.open(item) if is_zip else archive.extractfile(item)\n                        with inp:\n                            copied = 0\n                            while True:\n                                check_cancelled()\n                                chunk = inp.read(min(1024 * 1024, size - copied + 1))\n                                if not chunk:\n                                    break\n                                if copied + len(chunk) > size:\n                                    raise ValueError('Archive entry exceeds its declared size')\n                                output.write(chunk)\n                                digest.update(chunk)\n                                copied += len(chunk)\n                                done += len(chunk)\n                                if time.monotonic() - last > 0.5:\n                                    report(state='extracting', total=total)\n                                    last = time.monotonic()\n                            if copied != size:\n                                raise ValueError('Archive entry is truncated')\n                except BaseException:\n                    now = os.stat(parts[-1], dir_fd=parent, follow_symlinks=False)\n                    if (now.st_dev, now.st_ino) == (identity.st_dev, identity.st_ino):\n                        if not recovery or recovery.store.fingerprint(destination).get('hash') == digest.hexdigest():\n                            os.unlink(parts[-1], dir_fd=parent)\n                    raise\n                files += 1\n                if recovery:\n                    after = recovery.store.fingerprint(destination)\n                    if after['identity'][:2] != [identity.st_dev, identity.st_ino] or after.get('hash') != digest.hexdigest():\n                        raise RuntimeError('An extracted file changed during extraction; it was preserved.')\n                    if replaced:\n                        replaced['after'] = after\n                        recovery.save()\n                    else:\n                        recovery.created(destination, expected=after)\n        return total\n\nfor sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):\n    signal.signal(sig, cancel)\ntry:\n    os.nice(10)\nexcept (AttributeError, OSError):\n    pass\ntry:\n    job.mkdir(mode=0o700, parents=True, exist_ok=True)\n    (job / 'pid').write_text(str(os.getpid()))\n    report(state='checking', total=0)\n    check_cancelled()\n    with contextlib.ExitStack() as stack:\n        root = os.open('/', DIR_FLAGS)\n        stack.callback(os.close, root)\n        parent = stack.enter_context(directory(root, source.parent.parts[1:]))\n        fd = os.open(source.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)\n        archive_file = stack.enter_context(os.fdopen(fd, 'rb'))\n        before = os.fstat(fd)\n        if not stat.S_ISREG(before.st_mode):\n            raise ValueError('Select a regular archive file')\n        total = extract(parent, archive_file)\n        after = os.fstat(fd)\n        if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):\n            raise RuntimeError('Archive changed during extraction; check the extracted files')\n    if recovery:\n        recovery.finish()\n    report(state='extracted', total=total)\nexcept BaseException as exc:\n    rollback = recovery_store.undo(recovery.id) if recovery else None\n    report(state='cancelled' if isinstance(exc, InterruptedError) else 'error',\n           error=str(exc), partial=bool(rollback['conflicts']) if rollback else bool(files or folders),\n           recovery=rollback)\nfinally:\n    try:\n        (job / 'pid').unlink()\n    except OSError:\n        pass\n    if recovery:\n        recovery_lock.__exit__(None, None, None)\n";
-const deleteSource = "\"\"\"Delete one confirmed folder, using Python's symlink-resistant tree removal.\"\"\"\nimport json\nimport os\nfrom pathlib import Path\nimport shutil\nimport stat\nimport sys\n\n\ndef validate_path(value, root=Path('/content')):\n    # root is injectable only for disposable local tests, never a CLI argument.\n    path = Path(value)\n    if not path.is_absolute() or any(ord(c) < 32 or ord(c) == 127 for c in str(value)) or any(p in ('.', '..') for p in str(value).split('/')):\n        raise ValueError('Choose an absolute folder inside /content.')\n    try:\n        parts = path.relative_to(root).parts\n    except ValueError:\n        raise ValueError('Only folders inside /content can be deleted.')\n    if not parts or any(p.startswith('.colab-folder-zip-') for p in parts):\n        raise ValueError('Runtime roots and job folders cannot be deleted.')\n    if parts[0] == 'drive' and (len(parts) == 1 or\n            (parts[1] == 'MyDrive' and len(parts) == 2) or\n            (parts[1] == 'Shareddrives' and len(parts) <= 3)):\n        raise ValueError('Drive roots cannot be deleted.')\n    return path, parts\n\n\ndef remove_folder(value, root=Path('/content'), report=lambda **data: None):\n    path, parts = validate_path(value, root)\n    if not getattr(shutil.rmtree, 'avoids_symlink_attacks', False):\n        raise RuntimeError('This runtime cannot safely delete folders without following links.')\n    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW\n    previous = os.open('.', flags)\n    parent = None\n    deleting = False\n    try:\n        # Pin each parent directory without resolving symlink aliases. Changing\n        # cwd is confined to this dedicated process; no notebook cwd is changed.\n        parent = os.open(root, flags)\n        for component in parts[:-1]:\n            child = os.open(component, flags, dir_fd=parent)\n            os.close(parent)\n            parent = child\n        os.fchdir(parent)\n        name = parts[-1]\n        before = os.stat(name, follow_symlinks=False)\n        if not stat.S_ISDIR(before.st_mode):\n            raise ValueError('Choose a regular folder, not a file or symbolic link.')\n        # Refuse a selected mount or a tree containing mounted directories.\n        # fwalk uses directory descriptors and never traverses symlinks.\n        report(state='checking')\n        def walk_error(error):\n            raise error\n        for current, dirs, files, fd in os.fwalk(name, follow_symlinks=False, onerror=walk_error):\n            if os.path.ismount(current) or os.fstat(fd).st_dev != before.st_dev:\n                raise ValueError('A mounted directory cannot be deleted. Choose a folder inside it.')\n        now = os.stat(name, follow_symlinks=False)\n        if (before.st_dev, before.st_ino) != (now.st_dev, now.st_ino):\n            raise RuntimeError('The selected folder changed. Nothing was deleted.')\n        report(state='deleting')\n        deleting = True\n        shutil.rmtree(name)\n        if os.path.lexists(name):\n            raise RuntimeError('The folder still exists or was recreated by another process.')\n        report(state='deleted', path=str(path))\n    except Exception as error:\n        report(state='error', error=str(error), partial=deleting)\n        raise\n    finally:\n        os.fchdir(previous)\n        os.close(previous)\n        if parent is not None:\n            os.close(parent)\n\n\ndef main():\n    source, job = sys.argv[1:]\n    job = Path(job).absolute()\n    def report(**data):\n        temporary = job / 'status.tmp'\n        temporary.write_text(json.dumps(data), encoding='utf-8')\n        os.replace(temporary, job / 'status.json')\n    try:\n        remove_folder(source, report=report)\n    except Exception as error:\n        if not (job / 'status.json').exists():\n            report(state='error', error=str(error), partial=False)\n        return 1\n    return 0\n\n\nif __name__ == '__main__':\n    sys.exit(main())\n";
+const archiveSource = "import errno, json, os, pathlib, signal, stat, sys, time, zipfile\n\nsource = pathlib.Path(sys.argv[1]).absolute()\njob = pathlib.Path(sys.argv[2]).absolute()\nstatus = job / 'status.json'\narchive = job / (source.name + '.zip')\npartial = job / 'archive.partial'\nstarted = time.monotonic()\n\ndef report(**data):\n    data['elapsed'] = round(time.monotonic() - started, 1)\n    tmp = job / 'status.tmp'\n    tmp.write_text(json.dumps(data), encoding='utf-8')\n    os.replace(tmp, status)\n\ndef cancel(*args):\n    raise InterruptedError('Compression cancelled')\n\ndef check_cancelled():\n    if (job / 'cancel').exists():\n        cancel()\n\ndef walk_error(error):\n    raise error\n\ndef publish_archive(staged):\n    \"\"\"Keep the ZIP beside the source without ever replacing an existing path.\"\"\"\n    index = 0\n    while True:\n        check_cancelled()\n        suffix = '' if index == 0 else ' (' + str(index) + ')'\n        destination = source.parent / (source.name + suffix + '.zip')\n        try:\n            # Same filesystem: publish the completed archive atomically.\n            os.link(staged, destination)\n            return destination\n        except FileExistsError:\n            index += 1\n            continue\n        except OSError as error:\n            if error.errno not in (errno.EXDEV, errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS):\n                raise\n        # Mounted Drive and other filesystems may not support hard links.\n        # Exclusive creation still prevents overwriting files or symlinks.\n        try:\n            output = destination.open('xb')\n        except FileExistsError:\n            index += 1\n            continue\n        try:\n            copied = 0\n            last_report = 0\n            size = staged.stat().st_size\n            with output, staged.open('rb') as inp:\n                while True:\n                    check_cancelled()\n                    chunk = inp.read(1024 * 1024)\n                    if not chunk:\n                        break\n                    output.write(chunk)\n                    copied += len(chunk)\n                    if time.monotonic() - last_report > 0.5:\n                        report(state='saving', done=copied, total=size)\n                        last_report = time.monotonic()\n            return destination\n        except BaseException:\n            destination.unlink(missing_ok=True)\n            raise\n\nsignal.signal(signal.SIGTERM, cancel)\nsignal.signal(signal.SIGINT, cancel)\nif hasattr(signal, 'SIGHUP'):\n    signal.signal(signal.SIGHUP, cancel)\ntry:\n    os.nice(10)\nexcept (AttributeError, OSError):\n    pass\ntry:\n    job.mkdir(mode=0o700, parents=True, exist_ok=True)\n    if not source.is_dir() or source.is_symlink() or source == pathlib.Path('/'):\n        raise ValueError('Select a regular folder below the filesystem root')\n    if source.name.startswith('.colab-folder-zip-'):\n        raise ValueError('Select your original folder, not a ZIP staging folder')\n    (job / 'pid').write_text(str(os.getpid()))\n    report(state='scanning')\n    entries = []\n    total = 0\n    for current, dirs, files in os.walk(source, followlinks=False, onerror=walk_error):\n        check_cancelled()\n        current = pathlib.Path(current)\n        dirs.sort(); files.sort()\n        # Do not include this extension's staging folders or follow symbolic links.\n        dirs[:] = [d for d in dirs if not d.startswith('.colab-folder-zip-')]\n        for name in list(dirs):\n            p = current / name\n            if p.is_symlink():\n                entries.append((p, p.lstat()))\n                dirs.remove(name)\n        entries.append((current, current.lstat()))\n        for name in files:\n            check_cancelled()\n            p = current / name\n            st = p.lstat()\n            if not (stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode)):\n                raise ValueError('Cannot archive special file: ' + str(p))\n            entries.append((p, st))\n            if stat.S_ISREG(st.st_mode): total += st.st_size\n    done = 0\n    last = 0\n    count = 0\n    with zipfile.ZipFile(partial, 'x', compression=zipfile.ZIP_DEFLATED, compresslevel=1, allowZip64=True, strict_timestamps=False) as z:\n        for p, before in entries:\n            check_cancelled()\n            rel = str(p.relative_to(source.parent))\n            if stat.S_ISLNK(before.st_mode):\n                info = zipfile.ZipInfo(rel)\n                info.create_system = 3\n                info.external_attr = (stat.S_IFLNK | 0o777) << 16\n                z.writestr(info, os.readlink(p).encode('utf-8'))\n                count += 1\n            elif stat.S_ISDIR(before.st_mode):\n                z.write(p, rel + '/')\n            else:\n                # Refuse a symlink swapped in after enumeration.\n                fd = os.open(p, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))\n                with os.fdopen(fd, 'rb') as inp:\n                    now = os.fstat(inp.fileno())\n                    if (before.st_ino, before.st_size, before.st_mtime_ns) != (now.st_ino, now.st_size, now.st_mtime_ns):\n                        raise RuntimeError('File changed before compression: ' + str(p))\n                    info = zipfile.ZipInfo.from_file(p, rel, strict_timestamps=False)\n                    info.compress_type = zipfile.ZIP_DEFLATED\n                    info._compresslevel = 1\n                    with z.open(info, 'w', force_zip64=True) as out:\n                        while True:\n                            check_cancelled()\n                            chunk = inp.read(1024 * 1024)\n                            if not chunk: break\n                            out.write(chunk); done += len(chunk)\n                            if time.monotonic() - last > 0.5:\n                                report(state='compressing', done=done, total=total, files=count)\n                                last = time.monotonic()\n                    after = os.fstat(inp.fileno())\n                    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):\n                        raise RuntimeError('File changed during compression: ' + str(p))\n                count += 1\n    os.replace(partial, archive)\n    saved = publish_archive(archive)\n    archive.unlink(missing_ok=True)\n    report(state='ready', archive=str(saved), size=saved.stat().st_size, done=done, total=total, files=count)\nexcept BaseException as exc:\n    try: partial.unlink(missing_ok=True)\n    except OSError: pass\n    report(state='cancelled' if isinstance(exc, InterruptedError) else 'error', error=str(exc))\nfinally:\n    try: (job / 'pid').unlink(missing_ok=True)\n    except OSError: pass\n";
+const extractSource = "\"\"\"Extract beside an archive, numbering collisions unless replacement is enabled.\"\"\"\nimport contextlib, hashlib, json, os, pathlib, signal, stat, sys, tarfile, time, zipfile\n\nsource = pathlib.Path(sys.argv[1]).absolute()\njob = pathlib.Path(sys.argv[2]).absolute()\nstarted = time.monotonic()\nfiles = folders = done = 0\nMAX_ENTRIES = 100000\nDIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW\nfrom file_operations import Store, Transaction\nfile_store = Store()\ntransaction = Transaction(file_store, 'Extract: ' + source.name)\noverwrite = '--overwrite' in sys.argv\noverwrite_expected = {}\ncreated_roots = {}\n\ndef numbered_name(name, index, is_dir):\n    if index == 0:\n        return name\n    suffix = '' if is_dir else pathlib.Path(name).suffix\n    stem = name[:-len(suffix)] if suffix else name\n    return stem + ' (' + str(index) + ')' + suffix\n\ndef available_name(root_fd, name, is_dir, reserved):\n    index = 0\n    while True:\n        check_cancelled()\n        candidate = numbered_name(name, index, is_dir)\n        index += 1\n        # Do not steal another root name declared by this same archive.\n        if candidate != name and candidate in reserved:\n            continue\n        try:\n            os.stat(candidate, dir_fd=root_fd, follow_symlinks=False)\n        except FileNotFoundError:\n            return candidate\n\ndef prepare_destinations(root_fd, entries):\n    \"\"\"Reserve fresh root folders so separate extractions cannot merge trees.\"\"\"\n    global folders\n    roots = {}\n    for _, parts, is_dir, _ in entries:\n        roots[parts[0]] = roots.get(parts[0], False) or len(parts) > 1 or is_dir\n    reserved = set(roots)\n    names = {}\n    for name, is_dir in roots.items():\n        while True:\n            candidate = available_name(root_fd, name, is_dir, reserved)\n            if not is_dir:\n                break\n            try:\n                os.mkdir(candidate, mode=0o755, dir_fd=root_fd)\n            except FileExistsError:\n                # Another extraction may have taken the candidate meanwhile.\n                continue\n            info = os.stat(candidate, dir_fd=root_fd, follow_symlinks=False)\n            created_roots[candidate] = (info.st_dev, info.st_ino)\n            folders += 1\n            transaction.created(source.parent / candidate, directory=True)\n            break\n        names[name] = candidate\n        reserved.add(candidate)\n    return names, reserved\n\ndef report(**data):\n    data.update(path=str(source), destination=str(source.parent), files=files,\n                folders=folders, done=done, elapsed=round(time.monotonic() - started, 1))\n    tmp = job / 'status.tmp'\n    tmp.write_text(json.dumps(data), encoding='utf-8')\n    os.replace(tmp, job / 'status.json')\n\ndef cancel(*args):\n    raise InterruptedError('Extraction cancelled')\n\ndef check_cancelled():\n    if (job / 'cancel').exists():\n        cancel()\n\ndef member_path(name):\n    # Reject Windows separators/drives too, so archives remain unambiguous.\n    if not name or name.startswith('/') or '\\\\' in name or ':' in name or any(ord(c) < 32 or ord(c) == 127 for c in name):\n        raise ValueError('Unsafe archive path: ' + repr(name))\n    parts = tuple(p for p in name.split('/') if p not in ('', '.'))\n    if '..' in parts or any(p.startswith('.colab-folder-zip-') for p in parts):\n        raise ValueError('Unsafe archive path: ' + repr(name))\n    return parts\n\n@contextlib.contextmanager\ndef directory(root_fd, parts, create=False):\n    \"\"\"Resolve every component relative to an open directory, without symlinks.\"\"\"\n    global folders\n    fd = os.dup(root_fd)\n    traversed = []\n    try:\n        for part in parts:\n            traversed.append(part)\n            check_cancelled()\n            if create:\n                try:\n                    os.mkdir(part, mode=0o755, dir_fd=fd)\n                    folders += 1\n                    transaction.created(source.parent.joinpath(*traversed), directory=True)\n                except FileExistsError:\n                    pass\n            child = os.open(part, DIR_FLAGS, dir_fd=fd)\n            if len(traversed) == 1 and part in created_roots:\n                info = os.fstat(child)\n                if (info.st_dev, info.st_ino) != created_roots[part]:\n                    os.close(child)\n                    raise RuntimeError('The extraction folder changed; it was preserved.')\n            os.close(fd)\n            fd = child\n        yield fd\n    finally:\n        os.close(fd)\n\ndef check_destination(root_fd, parts, is_dir):\n    try:\n        with directory(root_fd, parts[:-1]) as parent:\n            try:\n                existing = os.stat(parts[-1], dir_fd=parent, follow_symlinks=False)\n            except FileNotFoundError:\n                return\n            if overwrite and not is_dir and stat.S_ISREG(existing.st_mode):\n                if source.parent.joinpath(*parts) == source:\n                    raise ValueError('Extraction cannot replace its own archive.')\n                overwrite_expected[parts] = transaction.store.fingerprint(source.parent.joinpath(*parts))\n                return\n            if not (is_dir and stat.S_ISDIR(existing.st_mode)):\n                raise FileExistsError('Already exists; nothing was overwritten: ' + '/'.join(parts))\n    except FileNotFoundError:\n        pass\n\ndef extract(root_fd, archive_file):\n    global files, done\n    name = source.name.lower()\n    is_zip = name.endswith('.zip')\n    if not is_zip and not name.endswith(('.tar', '.tar.gz', '.tgz')):\n        raise ValueError('Supported archives: .zip, .tar, .tar.gz, .tgz')\n    opener = zipfile.ZipFile(archive_file) if is_zip else tarfile.open(fileobj=archive_file, mode='r:*')\n    with opener as archive:\n        entries, types, total = [], {}, 0\n        members = archive.infolist() if is_zip else archive\n        for index, item in enumerate(members):\n            check_cancelled()\n            if index >= MAX_ENTRIES:\n                raise ValueError('Archive exceeds the 100,000-entry limit')\n            parts = member_path(item.filename if is_zip else item.name)\n            is_dir = item.is_dir() if is_zip else item.isdir()\n            if is_zip:\n                mode = (item.external_attr >> 16) & 0xffff\n                kind = stat.S_IFMT(mode) if item.create_system == 3 else 0\n                if kind not in (0, stat.S_IFDIR if is_dir else stat.S_IFREG):\n                    raise ValueError('Archive links and special files are not supported')\n                if item.flag_bits & 1:\n                    raise ValueError('Password-protected ZIP files are not supported')\n                size = item.file_size\n            else:\n                if not (is_dir or item.isfile()) or item.issparse():\n                    raise ValueError('Archive links, sparse files, and special files are not supported')\n                size = item.size\n            if not parts:\n                if is_dir:\n                    continue\n                raise ValueError('Empty archive filename')\n            if parts in types and not (types[parts] and is_dir):\n                raise ValueError('Duplicate archive path: ' + '/'.join(parts))\n            types[parts] = is_dir\n            entries.append((item, parts, is_dir, size))\n            if not is_dir:\n                total += size\n            if index % 500 == 0:\n                report(state='checking', total=total)\n        # Validate every archive path before reserving output folders.\n        for _, parts, is_dir, _ in entries:\n            check_cancelled()\n            if any(types.get(parts[:i]) is False for i in range(1, len(parts))):\n                raise ValueError('Archive uses a file as a directory: ' + '/'.join(parts))\n            if overwrite:\n                check_destination(root_fd, parts, is_dir)\n        space = os.fstatvfs(root_fd)\n        if total > space.f_bavail * space.f_frsize:\n            raise OSError('Not enough free disk space to extract this archive')\n        names, reserved = ({}, set()) if overwrite else prepare_destinations(root_fd, entries)\n        report(state='extracting', total=total)\n        last = time.monotonic()\n        for item, parts, is_dir, size in entries:\n            check_cancelled()\n            original_root = parts[0]\n            if not overwrite:\n                parts = (names[original_root],) + parts[1:]\n            with directory(root_fd, parts if is_dir else parts[:-1], create=True) as parent:\n                if is_dir:\n                    continue\n                destination = source.parent.joinpath(*parts)\n                replaced = None\n                if overwrite and os.path.lexists(destination):\n                    if parts not in overwrite_expected or transaction.store.fingerprint(destination) != overwrite_expected[parts]:\n                        raise RuntimeError('Destination changed after extraction preflight; it was preserved.')\n                    replaced = transaction.remove(destination, expected=overwrite_expected[parts])\n                # O_EXCL also rejects symlinks and files created after preflight.\n                while True:\n                    try:\n                        fd = os.open(parts[-1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=parent)\n                        break\n                    except FileExistsError:\n                        if overwrite or len(parts) != 1:\n                            raise\n                        # A loose-file collision can also appear after preflight.\n                        candidate = available_name(root_fd, original_root, False, reserved)\n                        reserved.add(candidate)\n                        names[original_root] = candidate\n                        parts = (candidate,)\n                        destination = source.parent / candidate\n                identity = os.fstat(fd)\n                digest = hashlib.sha256()\n                copied = 0\n                try:\n                    with os.fdopen(fd, 'wb') as output:\n                        inp = archive.open(item) if is_zip else archive.extractfile(item)\n                        with inp:\n                            copied = 0\n                            while True:\n                                check_cancelled()\n                                chunk = inp.read(min(1024 * 1024, size - copied + 1))\n                                if not chunk:\n                                    break\n                                if copied + len(chunk) > size:\n                                    raise ValueError('Archive entry exceeds its declared size')\n                                output.write(chunk)\n                                digest.update(chunk)\n                                copied += len(chunk)\n                                done += len(chunk)\n                                if time.monotonic() - last > 0.5:\n                                    report(state='extracting', total=total)\n                                    last = time.monotonic()\n                            if copied != size:\n                                raise ValueError('Archive entry is truncated')\n                except BaseException:\n                    now = os.stat(parts[-1], dir_fd=parent, follow_symlinks=False)\n                    if (now.st_dev, now.st_ino) == (identity.st_dev, identity.st_ino):\n                        if transaction.store.fingerprint(destination).get('hash') == digest.hexdigest():\n                            os.unlink(parts[-1], dir_fd=parent)\n                    raise\n                files += 1\n                after = transaction.store.fingerprint(destination)\n                if after['identity'][:2] != [identity.st_dev, identity.st_ino] or after.get('hash') != digest.hexdigest():\n                    raise RuntimeError('An extracted file changed during extraction; it was preserved.')\n                if replaced:\n                    replaced['after'] = after\n                else:\n                    transaction.created(destination, expected=after)\n        return total\n\nfor sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):\n    signal.signal(sig, cancel)\ntry:\n    os.nice(10)\nexcept (AttributeError, OSError):\n    pass\ntry:\n    job.mkdir(mode=0o700, parents=True, exist_ok=True)\n    (job / 'pid').write_text(str(os.getpid()))\n    report(state='checking', total=0)\n    check_cancelled()\n    with contextlib.ExitStack() as stack:\n        root = os.open('/', DIR_FLAGS)\n        stack.callback(os.close, root)\n        parent = stack.enter_context(directory(root, source.parent.parts[1:]))\n        fd = os.open(source.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)\n        archive_file = stack.enter_context(os.fdopen(fd, 'rb'))\n        before = os.fstat(fd)\n        if not stat.S_ISREG(before.st_mode):\n            raise ValueError('Select a regular archive file')\n        total = extract(parent, archive_file)\n        after = os.fstat(fd)\n        if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):\n            raise RuntimeError('Archive changed during extraction; check the extracted files')\n    transaction.finish()\n    report(state='extracted', total=total)\nexcept BaseException as exc:\n    # Once committed, temporary originals have been discarded. A subsequent\n    # status-write failure must not remove the completed output.\n    completed = transaction.data['state'] == 'complete'\n    rollback = {'conflicts': []} if completed else file_store.rollback(transaction)\n    report(state='cancelled' if isinstance(exc, InterruptedError) else 'error',\n           error=str(exc), partial=completed or bool(rollback['conflicts']),\n           temporary_originals=[str(p) for p in transaction.buckets] if rollback['conflicts'] else [])\nfinally:\n    try:\n        (job / 'pid').unlink()\n    except OSError:\n        pass\n";
+const deleteSource = "\"\"\"Permanently delete selected files/folders without traversing symlink parents.\"\"\"\nimport json\nimport os\nfrom pathlib import Path\nimport re\nimport shutil\nimport stat\nimport sys\n\n\ndef validate_path(value, root=Path('/content')):\n    # root is injectable only for disposable local tests, never a CLI argument.\n    path = Path(value)\n    if not path.is_absolute() or any(ord(c) < 32 or ord(c) == 127 for c in str(value)) or any(p in ('.', '..') for p in str(value).split('/')):\n        raise ValueError('Choose an absolute file or folder inside /content.')\n    try:\n        parts = path.relative_to(root).parts\n    except ValueError:\n        raise ValueError('Only files and folders inside /content can be deleted.')\n    if not parts or any(p.startswith('.colab-folder-zip-') for p in parts):\n        raise ValueError('Runtime roots and job folders cannot be deleted.')\n    if parts[0] == 'drive' and (len(parts) == 1 or\n            (parts[1] == 'MyDrive' and len(parts) == 2) or\n            (parts[1] == 'Shareddrives' and len(parts) <= 3)):\n        raise ValueError('Drive roots cannot be deleted.')\n    return path, parts\n\n\ndef remove_folder(value, root=Path('/content'), report=lambda **data: None):\n    return remove_item(value, True, root, report)\n\n\ndef runtime_mounts():\n    # Colab uses Linux overlayfs: regular files can have a different st_dev\n    # from their parent without being mounts. Use the kernel mount table,\n    # which also identifies same-device bind mounts that ismount() misses.\n    if not sys.platform.startswith('linux'):\n        return None\n    mounts = set()\n    try:\n        with open('/proc/self/mountinfo', encoding='utf-8', errors='surrogateescape') as source:\n            for line in source:\n                header, separator, filesystem = line.partition(' - ')\n                fields = header.split()\n                if not separator or len(fields) < 6 or len(filesystem.split()) < 3:\n                    raise ValueError('Invalid mount table.')\n                point = re.sub(r'\\\\(040|011|012|134)',\n                               lambda match: chr(int(match[1], 8)), fields[4])\n                if not point.startswith('/'):\n                    raise ValueError('Invalid mount path.')\n                mounts.add(Path(point))\n        if not mounts:\n            raise ValueError('Empty mount table.')\n    except (OSError, ValueError) as error:\n        raise RuntimeError('Cannot inspect runtime mounts. Nothing was deleted.') from error\n    return mounts\n\n\ndef remove_item(value, is_directory, root=Path('/content'), report=lambda **data: None):\n    path, parts = validate_path(value, root)\n    if is_directory and not getattr(shutil.rmtree, 'avoids_symlink_attacks', False):\n        raise RuntimeError('This runtime cannot safely delete folders without following links.')\n    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW\n    previous = os.open('.', flags)\n    parent = None\n    deleting = False\n    try:\n        # Pin each parent directory without resolving symlink aliases. Changing\n        # cwd is confined to this dedicated process; no notebook cwd is changed.\n        parent = os.open(root, flags)\n        for component in parts[:-1]:\n            child = os.open(component, flags, dir_fd=parent)\n            os.close(parent)\n            parent = child\n        os.fchdir(parent)\n        name = parts[-1]\n        before = os.stat(name, follow_symlinks=False)\n        if not (stat.S_ISDIR(before.st_mode) if is_directory else stat.S_ISREG(before.st_mode)):\n            raise ValueError('The selected item changed type or is a symbolic link/special file. Refresh Files before retrying.')\n        report(state='checking')\n        mounts = runtime_mounts()\n        # cwd is the pinned, physical parent, including on local systems where\n        # /var aliases /private/var. Compare whole paths, never name prefixes.\n        physical_path = Path.cwd() / name\n        mount_error = ('A mounted directory cannot be deleted. Choose a folder inside it.'\n                       if is_directory else 'A mounted file cannot be deleted.')\n        if mounts is not None and any(mount == physical_path or\n                (is_directory and physical_path in mount.parents) for mount in mounts):\n            raise ValueError(mount_error)\n        # Refuse mounted trees before deleting any contents. fwalk pins\n        # directories and never traverses symlinks; retain its device check\n        # for directory mounts appearing after the mount-table snapshot.\n        def walk_error(error):\n            raise error\n        if is_directory:\n            for current, dirs, files, fd in os.fwalk(name, follow_symlinks=False, onerror=walk_error):\n                if ((mounts is None and os.path.ismount(current)) or\n                        os.fstat(fd).st_dev != before.st_dev):\n                    raise ValueError(mount_error)\n        elif mounts is None and os.path.ismount(name):\n            raise ValueError(mount_error)\n        now = os.stat(name, follow_symlinks=False)\n        if (before.st_dev, before.st_ino) != (now.st_dev, now.st_ino):\n            raise RuntimeError('The selected item changed. Nothing was deleted.')\n        report(state='deleting')\n        deleting = True\n        if is_directory:\n            shutil.rmtree(name)\n        else:\n            os.unlink(name)\n        if os.path.lexists(name):\n            raise RuntimeError('The item still exists or was recreated by another process.')\n        report(state='deleted', path=str(path))\n    except Exception as error:\n        report(state='error', error=str(error), partial=deleting)\n        raise\n    finally:\n        os.fchdir(previous)\n        os.close(previous)\n        if parent is not None:\n            os.close(parent)\n\n\ndef deletion_plan(items, root=Path('/content')):\n    # Validate the entire request before deleting anything. Collapse parent/\n    # child selections so a selected tree is only processed once.\n    if not isinstance(items, list) or not items:\n        raise ValueError('Select at least one file or folder.')\n    unique = {}\n    for item in items:\n        if (not isinstance(item, dict) or not isinstance(item.get('path'), str)\n                or type(item.get('isDirectory')) is not bool):\n            raise ValueError('Invalid deletion selection.')\n        path = str(validate_path(item['path'], root)[0])\n        if path in unique and unique[path]['isDirectory'] != item['isDirectory']:\n            raise ValueError('Conflicting file types in selection.')\n        unique[path] = dict(path=path, isDirectory=item['isDirectory'])\n    directories = {path for path, item in unique.items() if item['isDirectory']}\n    return [item for path, item in unique.items()\n            if not any(str(parent) in directories for parent in Path(path).parents)]\n\n\ndef remove_selected(items, root=Path('/content'), report=lambda **data: None):\n    plan = deletion_plan(items, root)\n    results = []\n    def progress(**data):\n        report(state='deleting', total=len(plan), completed=len(results),\n               current=item['path'], phase=data['state'], results=list(results))\n    for item in plan:\n        last = {}\n        def item_report(**data):\n            last.update(data)\n            progress(**data)\n        try:\n            remove_item(item['path'], item['isDirectory'], root, item_report)\n            results.append(dict(path=item['path'], deleted=True))\n        except Exception as error:\n            results.append(dict(path=item['path'], deleted=False, error=str(error),\n                                partial=bool(last.get('partial', False))))\n        report(state='deleting', total=len(plan), completed=len(results),\n               current=item['path'], results=list(results))\n    report(state='complete', total=len(plan), completed=len(results), results=results)\n    return results\n\n\ndef main():\n    batch = len(sys.argv) > 1 and sys.argv[1] == '--batch'\n    source, job = sys.argv[2:] if batch else sys.argv[1:]\n    job = Path(job).absolute()\n    def report(**data):\n        temporary = job / 'status.tmp'\n        temporary.write_text(json.dumps(data), encoding='utf-8')\n        os.replace(temporary, job / 'status.json')\n    try:\n        if batch:\n            results = remove_selected(json.loads(Path(source).read_text(encoding='utf-8')), report=report)\n            return 0 if all(item['deleted'] for item in results) else 1\n        remove_folder(source, report=report)\n    except Exception as error:\n        if not (job / 'status.json').exists():\n            report(state='error', error=str(error), partial=False)\n        return 1\n    return 0\n\n\nif __name__ == '__main__':\n    sys.exit(main())\n";
 const detailsSource = "\"\"\"Read folder metadata without reading file contents or following child links.\"\"\"\nimport heapq\nimport json\nimport os\nfrom pathlib import Path\nimport signal\nimport stat\nimport sys\nimport time\n\n\ndef scan_folder(value, report=lambda **data: None, cancelled=lambda: False):\n    source = Path(value)\n    if not source.is_absolute() or source == Path('/') or any(p in ('.', '..') for p in str(value).split('/')):\n        raise ValueError('Choose an absolute folder below the filesystem root.')\n    if source.name.startswith('.colab-folder-zip-'):\n        raise ValueError('Choose your original folder, not an extension job folder.')\n    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW\n    counts = dict(bytes=0, files=0, folders=0, links=0, special=0, skipped=0, excluded=0)\n    largest, errors, stack = [], [], []\n    started = time.monotonic()\n    last_report = 0\n\n    def check():\n        if cancelled():\n            raise InterruptedError('Folder scan cancelled.')\n\n    def snapshot(state):\n        return dict(state=state, path=str(source), **counts,\n                    largest=[dict(path=name, size=size) for size, name in sorted(largest, key=lambda x: (-x[0], x[1]))],\n                    errors=list(errors), elapsed=round(time.monotonic() - started, 1))\n\n    def tick(force=False):\n        nonlocal last_report\n        check()\n        now = time.monotonic()\n        if force or now - last_report >= 0.4:\n            report(**snapshot('scanning'))\n            last_report = now\n\n    def skipped(name, error):\n        counts['skipped'] += 1\n        if len(errors) < 5:\n            errors.append(dict(path=name, error=str(error)))\n\n    def push(fd, relative):\n        try:\n            iterator = os.scandir(fd)\n        except BaseException:\n            os.close(fd)\n            raise\n        stack.append((fd, iterator, relative))\n\n    try:\n        check()\n        push(os.open(source, flags), '')\n        tick(force=True)\n        while stack:\n            tick()\n            fd, iterator, relative = stack[-1]\n            try:\n                entry = next(iterator)\n            except (StopIteration, OSError) as error:\n                if isinstance(error, OSError):\n                    skipped(relative or '.', error)\n                iterator.close()\n                os.close(fd)\n                stack.pop()\n                continue\n            name = relative + '/' + entry.name if relative else entry.name\n            try:\n                info = entry.stat(follow_symlinks=False)\n                if stat.S_ISDIR(info.st_mode):\n                    if entry.name.startswith('.colab-folder-zip-'):\n                        counts['excluded'] += 1\n                        continue\n                    counts['folders'] += 1\n                    # Descriptor-relative, no-follow opens also reject a child\n                    # swapped for a symlink between stat and traversal.\n                    child = os.open(entry.name, flags, dir_fd=fd)\n                    try:\n                        current = os.fstat(child)\n                        if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):\n                            raise OSError('Folder changed during the scan.')\n                    except BaseException:\n                        os.close(child)\n                        raise\n                    push(child, name)\n                elif stat.S_ISREG(info.st_mode):\n                    counts['files'] += 1\n                    counts['bytes'] += info.st_size\n                    item = (info.st_size, name)\n                    if len(largest) < 10:\n                        heapq.heappush(largest, item)\n                    else:\n                        heapq.heappushpop(largest, item)\n                elif stat.S_ISLNK(info.st_mode):\n                    counts['links'] += 1\n                else:\n                    counts['special'] += 1\n            except OSError as error:\n                skipped(name, error)\n        check()\n        result = snapshot('details')\n        report(**result)\n        return result\n    finally:\n        for fd, iterator, _ in reversed(stack):\n            iterator.close()\n            os.close(fd)\n\n\ndef main():\n    source, directory = sys.argv[1:]\n    job = Path(directory)\n    def report(**data):\n        temporary = job / 'status.tmp'\n        temporary.write_text(json.dumps(data), encoding='utf-8')\n        os.replace(temporary, job / 'status.json')\n    def cancel(*args):\n        raise InterruptedError('Folder scan cancelled.')\n    for name in ('SIGINT', 'SIGTERM', 'SIGHUP'):\n        if hasattr(signal, name):\n            signal.signal(getattr(signal, name), cancel)\n    try:\n        try:\n            os.nice(10)\n        except (AttributeError, OSError):\n            pass\n        scan_folder(source, report=report, cancelled=lambda: (job / 'cancel').exists())\n    except BaseException as error:\n        report(state='cancelled' if isinstance(error, InterruptedError) else 'error', error=str(error))\n        return 1\n    return 0\n\n\nif __name__ == '__main__':\n    sys.exit(main())\n";
+const fileOperationsSource = "\"\"\"Temporary staging and rollback for in-flight extraction.\n\nNo completed-operation history or user-triggered reversal is retained.\n\"\"\"\nimport contextlib\nimport ctypes\nimport hashlib\nimport os\nfrom pathlib import Path\nimport shutil\nimport stat\nimport uuid\n\nPREFIX = '.colab-folder-zip-'\nFLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW\n\n\ndef rename_exclusive(src, dst, src_fd, dst_fd):\n    \"\"\"Atomic no-replace rename, including directories. Fail closed otherwise.\"\"\"\n    libc = ctypes.CDLL(None, use_errno=True)\n    if hasattr(libc, 'renameat2'):\n        result = libc.renameat2(src_fd, os.fsencode(src), dst_fd, os.fsencode(dst), 1)\n    elif hasattr(libc, 'renameatx_np'):  # macOS local test fixtures\n        result = libc.renameatx_np(src_fd, os.fsencode(src), dst_fd, os.fsencode(dst), 4)\n    else:\n        raise OSError('This filesystem cannot safely rename without overwriting.')\n    if result:\n        code = ctypes.get_errno()\n        raise OSError(code, os.strerror(code))\n\n\nclass Store:\n    def __init__(self, root=Path('/content')):\n        self.root = Path(root).absolute()\n\n    def path(self, value, internal=False):\n        p = Path(value)\n        if not p.is_absolute() or any(c in str(value) for c in ('\\x00',)) or any(\n                ord(c) < 32 or ord(c) == 127 for c in str(value)):\n            raise ValueError('Choose an absolute path inside /content.')\n        if any(c in ('.', '..') for c in str(value).split('/')):\n            raise ValueError('Relative path components are not supported.')\n        parts = p.relative_to(self.root).parts\n        if not parts or (not internal and any(c.startswith(PREFIX) for c in parts)):\n            raise ValueError('Runtime roots and temporary folders are protected.')\n        if parts[0] == 'drive' and (len(parts) == 1 or\n                (parts[1] == 'MyDrive' and len(parts) == 2) or\n                (parts[1] == 'Shareddrives' and len(parts) <= 3)):\n            raise ValueError('Drive roots are protected.')\n        return p\n\n    @contextlib.contextmanager\n    def parent(self, path):\n        # Pin all ancestors. No symlink traversal, even if a parent is swapped.\n        fd = os.open('/', FLAGS)\n        try:\n            for part in Path(path).parent.parts[1:]:\n                child = os.open(part, FLAGS, dir_fd=fd)\n                os.close(fd)\n                fd = child\n            yield fd\n        finally:\n            os.close(fd)\n\n    def fingerprint(self, path):\n        \"\"\"Content hash plus identity/metadata. Changes during hashing fail.\"\"\"\n        path = Path(path)\n        with self.parent(path) as parent:\n            return self._fingerprint(parent, path.name)\n\n    def _fingerprint(self, parent, name):\n        try:\n            before = os.stat(name, dir_fd=parent, follow_symlinks=False)\n        except FileNotFoundError:\n            return None\n        identity = [before.st_dev, before.st_ino, before.st_mode]\n        if stat.S_ISLNK(before.st_mode):\n            return {'kind': 'link', 'identity': identity, 'target': os.readlink(name, dir_fd=parent)}\n        if stat.S_ISREG(before.st_mode):\n            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)\n            with os.fdopen(fd, 'rb') as inp:\n                if os.fstat(inp.fileno()).st_ino != before.st_ino:\n                    raise RuntimeError('File was replaced during verification.')\n                h = hashlib.sha256()\n                for chunk in iter(lambda: inp.read(1024 * 1024), b''):\n                    h.update(chunk)\n                after = os.fstat(inp.fileno())\n            if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (\n                    after.st_size, after.st_mtime_ns, after.st_ctime_ns):\n                raise RuntimeError('File changed during verification.')\n            return {'kind': 'file', 'identity': identity, 'size': before.st_size,\n                    'mtime': before.st_mtime_ns, 'hash': h.hexdigest()}\n        if stat.S_ISDIR(before.st_mode):\n            fd = os.open(name, FLAGS, dir_fd=parent)\n            try:\n                if os.fstat(fd).st_ino != before.st_ino:\n                    raise RuntimeError('Directory was replaced during verification.')\n                names = sorted(os.listdir(fd))\n                children = {}\n                for child in names:\n                    value = self._fingerprint(fd, child)\n                    if value is None:\n                        raise RuntimeError('Folder changed during verification.')\n                    if value['identity'][0] != before.st_dev:\n                        raise ValueError('Folders containing mount points are not supported.')\n                    children[child] = value\n                if names != sorted(os.listdir(fd)):\n                    raise RuntimeError('Folder changed during verification.')\n                return {'kind': 'directory', 'identity': identity, 'children': children}\n            finally:\n                os.close(fd)\n        raise ValueError('Special files are not supported.')\n\n    def move(self, source, destination, expected):\n        source, destination = Path(source), Path(destination)\n        with self.parent(source) as sf, self.parent(destination) as df:\n            if self._fingerprint(sf, source.name) != expected:\n                raise RuntimeError('The item changed; it was preserved.')\n            rename_exclusive(source.name, destination.name, sf, df)\n\n    def rollback(self, transaction):\n        d = transaction.data\n        conflicts = []\n        for change in reversed(d['changes']):\n            if change.get('rolled_back'):\n                continue\n            path = self.path(change['path'])\n            try:\n                if change['kind'] == 'directory':\n                    with self.parent(path) as parent:\n                        now = self._fingerprint(parent, path.name)\n                        if now is None:\n                            pass\n                        elif now['identity'] != change['after']['identity'] or now.get('children'):\n                            raise RuntimeError('The folder contains later changes.')\n                        else:\n                            os.rmdir(path.name, dir_fd=parent)\n                else:\n                    now = self.fingerprint(path)\n                    if now is None and not change.get('published', True) and not change.get('backup'):\n                        change['rolled_back'] = True\n                        continue\n                    # If publication failed after backing up the original, its\n                    # empty location can still be restored without deleting data.\n                    unpublished = now is None and change.get('backup') and not change.get('published', True)\n                    if now != change.get('after') and not unpublished:\n                        raise RuntimeError('The item was changed or replaced after this action.')\n                    backup = change.get('backup')\n                    if backup:\n                        backup = self.path(backup, internal=True)\n                        if self.fingerprint(backup) != change['before']:\n                            raise RuntimeError('The temporary original was changed or is unavailable.')\n                    if now is not None:\n                        bucket = self.path(change['bucket'], internal=True)\n                        discarded = bucket / ('discarded-' + uuid.uuid4().hex)\n                        self.move(path, discarded, now)\n                    if backup:\n                        try:\n                            self.move(backup, path, change['before'])\n                        except BaseException:\n                            # Restore the visible output if restoring the original failed.\n                            if now is not None and self.fingerprint(path) is None:\n                                self.move(discarded, path, now)\n                            raise\n                change['rolled_back'] = True\n            except (OSError, ValueError, RuntimeError) as error:\n                conflicts.append({'path': str(path), 'reason': str(error)})\n        d['state'] = 'conflict' if conflicts else 'rolled_back'\n        if not conflicts:\n            try:\n                transaction.clean()\n            except (OSError, RuntimeError) as error:\n                conflicts.append({'path': ', '.join(map(str, transaction.buckets)), 'reason': str(error)})\n        return {'state': d['state'], 'conflicts': conflicts}\n\nclass Transaction:\n    def __init__(self, store, label):\n        self.store = store\n        self.id = str(uuid.uuid4())\n        self.data = {'label': label, 'state': 'pending', 'changes': []}\n        self.buckets = {}\n\n    def clean(self):\n        # Only this operation's private staging directories are disposable.\n        for bucket, identity in self.buckets.items():\n            with self.store.parent(bucket) as parent:\n                try:\n                    before = os.stat(bucket.name, dir_fd=parent, follow_symlinks=False)\n                except FileNotFoundError:\n                    continue\n                if (before.st_dev, before.st_ino) != identity or not stat.S_ISDIR(before.st_mode):\n                    raise RuntimeError('Temporary directory was replaced; it was preserved.')\n                # rmtree is symlink-resistant on supported hosted runtimes.\n                if not shutil.rmtree.avoids_symlink_attacks:\n                    raise RuntimeError('Safe temporary-file cleanup is unavailable.')\n                previous = os.open('.', FLAGS)\n                try:\n                    os.fchdir(parent)\n                    shutil.rmtree(bucket.name)\n                finally:\n                    os.fchdir(previous)\n                    os.close(previous)\n\n    def finish(self):\n        self.data['state'] = 'complete'\n        try:\n            self.clean()\n        except (OSError, RuntimeError):\n            # The operation already succeeded. Leave staging for manual cleanup.\n            pass\n\n    def bucket(self, path):\n        path = Path(path)\n        parts = path.relative_to(self.store.root).parts\n        anchor = self.store.root\n        if parts[:2] == ('drive', 'MyDrive'):\n            anchor = self.store.root / 'drive' / 'MyDrive'\n        elif parts[:2] == ('drive', 'Shareddrives') and len(parts) > 3:\n            anchor = self.store.root.joinpath(*parts[:3])\n        # A custom mount keeps its temporary files on that filesystem.\n        for ancestor in reversed(path.parent.parents):\n            if ancestor != self.store.root and self.store.root in ancestor.parents and os.path.ismount(ancestor):\n                anchor = ancestor\n        if os.path.ismount(path.parent):\n            anchor = path.parent\n        bucket = anchor / (PREFIX + 'transaction-' + self.id)\n        with self.store.parent(bucket) as parent:\n            try:\n                os.mkdir(bucket.name, 0o700, dir_fd=parent)\n            except FileExistsError:\n                pass\n            fd = os.open(bucket.name, FLAGS, dir_fd=parent)\n            info = os.fstat(fd)\n            os.close(fd)\n        identity = (info.st_dev, info.st_ino)\n        if bucket in self.buckets and self.buckets[bucket] != identity:\n            raise RuntimeError('Temporary directory was replaced; it was preserved.')\n        self.buckets[bucket] = identity\n        return bucket\n\n    def created(self, path, directory=False, expected=None):\n        path = self.store.path(str(path))\n        after = self.store.fingerprint(path)\n        if expected is not None and after != expected:\n            raise RuntimeError('The created item changed before recording; it was preserved.')\n        change = {'kind': 'directory' if directory else 'write',\n                  'path': str(path), 'after': after,\n                  'bucket': str(self.bucket(path))}\n        self.data['changes'].append(change)\n        return change\n\n    def remove(self, path, expected=None):\n        path = self.store.path(str(path))\n        before = self.store.fingerprint(path)\n        if expected is not None and before != expected:\n            raise RuntimeError('The item changed before replacement; it was preserved.')\n        if before is None:\n            raise FileNotFoundError(str(path))\n        if os.path.ismount(path):\n            raise ValueError('Mount points are protected.')\n        bucket = self.bucket(path)\n        backup = bucket / uuid.uuid4().hex\n        change = {'kind': 'write', 'path': str(path), 'before': before,\n                  'backup': str(backup), 'bucket': str(bucket), 'after': None}\n        self.data['changes'].append(change)\n        self.store.move(path, backup, before)\n        return change\n";
 // A self-contained Material-style ring that inherits Colab's theme colours.
 // Shadow DOM prevents notebook or page styles from changing its geometry.
 function createProgress(label){
@@ -168,10 +197,10 @@ function createProgress(label){
   update(label);return {element,update};
 }
 
-// File mutations retain runtime-local recovery data.
+// File tools operate only when requested from the sidebar.
 if (document.querySelector('meta[name="colab-folder-zip-version"]')) return;
 const marker=document.createElement('meta');
-marker.name='colab-folder-zip-version';marker.content='0.9.5';document.head.append(marker);
+marker.name='colab-folder-zip-version';marker.content='0.10.14';document.head.append(marker);
 const jobs=new Map();
 let selected=null;
 function context(){
@@ -192,6 +221,7 @@ function folderPath(view){
 function setStatus(job,label,detail=label,error=false,progress=null){
   job.status={label,detail,error,progress};
   // Keep feedback with its folder, including after Colab refreshes the file tree.
+  if(job.view?.isConnected&&filePath(job.view)!==job.path){job.badge?.remove();job.badge=null;job.view=null;}
   const view=job.view?.isConnected ? job.view : [...document.querySelectorAll('colab-file-view')].find(v=>filePath(v)===job.path);
   if(!view)return;
   job.view=view;
@@ -217,7 +247,8 @@ function setStatus(job,label,detail=label,error=false,progress=null){
   if(text.textContent!==value)text.textContent=value;
   badge.title=detail;
   badge.style.color=error?'var(--colab-error-color,#b3261e)':'var(--colab-secondary-text-color,inherit)';
-  const busy=!error&&!job.finished&&jobs.get(job.path)===job;
+  const owner=job.batch||job;
+  const busy=!error&&!job.finished&&!owner.finished&&jobs.get(owner.path)===owner;
   // Ordinary actions show only the ring and leave no completion badge.
   // Error details remain visible so failures cannot look like success.
   text.hidden=!error;
@@ -236,7 +267,7 @@ function finishStatus(job,label,detail,error=false){
 async function cleanup(job){
   if(!job.created)return;
   // Only job staging files are removed. The saved sibling ZIP is retained.
-  const names=['archive.py','extract_archive.py','delete_folder.py','folder_details.py','recovery.py','status.json','status.tmp','pid','cancel','archive.partial'];
+  const names=['archive.py','extract_archive.py','delete_folder.py','folder_details.py','file_operations.py','args.json','status.json','status.tmp','pid','cancel','archive.partial'];
   if(job.kind==='zip')names.push(job.path.split('/').pop()+'.zip');
   for(const name of names){
     try{await request(job.ctx,'/api/contents/'+encodePath(job.dir+'/'+name),'DELETE');}
@@ -247,9 +278,10 @@ async function cleanup(job){
 async function run(target,download){
   let path;
   try{path=deletionPath(target.path);}catch(error){setStatus(target,'ZIP failed',error.message,true);return;}
-  if(jobs.size||undoBusy)return;
+  if(jobs.size)return;
   const id=crypto.randomUUID();
   const job={kind:'zip',path,view:target.view,id,dir:'/content/.colab-folder-zip-'+id,cancelled:false,terminal:null};
+  if(download)job.downloadPermission=downloadPermission();
   jobs.set(path,job);setStatus(job,'Zipping…');addMenuItems();
   try{
     job.ctx=context();const ctx=job.ctx;
@@ -259,9 +291,8 @@ async function run(target,download){
     job.terminal=await openTerminal(ctx);
     await request(ctx,'/api/contents/'+encodePath(job.dir),'PUT',{type:'directory'});job.created=true;
     await put(ctx,job.dir+'/archive.py',archiveSource);
-    await put(ctx,job.dir+'/recovery.py',recoverySource);
     if(job.cancelled)throw new Error('Cancelled.');
-    job.terminal.send(`python3 -B ${quote(job.dir+'/archive.py')} ${quote(path)} ${quote(job.dir)} --undo\n`);
+    job.terminal.send(`python3 -B ${quote(job.dir+'/archive.py')} ${quote(path)} ${quote(job.dir)}\n`);
     job.started=true;
     let misses=0,cancelSent=false;
     while(true){
@@ -283,51 +314,26 @@ async function run(target,download){
       const fraction=Number.isFinite(result.done)&&Number.isFinite(result.total)&&result.total>0?Math.min(1,Math.max(0,result.done/result.total)):null;
       setStatus(job,fraction!==null?`${label} ${Math.round(fraction*100)}%`:`${label}…`,undefined,false,fraction);
     }
-    await job.terminal.close();job.terminal=null;
-    const tree=document.querySelector('colab-file-browser')?.currentTree;
-    // Make the newly saved sibling archive appear in the Files sidebar.
-    try{await tree?.refresh?.();}catch{}
     if(job.cancelled)throw new Error('Cancelled.');
     if(download){
-      if(undoPreferences.managedDownloads){
-        setStatus(job,'Starting tracked download…',job.result.archive);
-        await managedDownload(job);
-      }else{
-        const files=document.querySelector('colab-file-browser')?.currentTree?.files;
-        if(!files?.getFile)throw new Error('ZIP saved, but Colab file download is unavailable.');
-        setStatus(job,'Downloading…',job.result.archive);
-        const file=await files.getFile(job.result.archive);
-        assertRuntime(ctx);
-        if(job.cancelled)throw new Error('Cancelled.');
-        await file.download({
-          get canceled(){return job.cancelled;},
-          update:n=>{
-            const fraction=Number.isFinite(n)?Math.min(1,Math.max(0,n)):null;
-            setStatus(job,fraction!==null?`Downloading ${Math.round(fraction*100)}%`:'Downloading…',job.result.archive,false,fraction);
-          }
-        });
-      }
+      await downloadArchive(job);
       if(job.cancelled)throw new Error('Cancelled.');
     }
+    await job.terminal.close();job.terminal=null;
+    const tree=document.querySelector('colab-file-browser')?.currentTree;
+    // Sidebar refresh must not delay starting the requested download.
+    try{await tree?.refresh?.();}catch{}
     finishStatus(job,download?'Download started':'ZIP ready','Saved '+job.result.archive);
   }catch(error){
-    let rollbackDetail='';
-    if(job.cancelled&&job.result?.undo){
-      try{
-        const recovered=await recoveryCall({action:'undo',id:job.result.undo},job.ctx);
-        if(recovered.conflicts.length)rollbackDetail=' Later changes were preserved; resolve the conflict and click Undo again.';
-        else job.result=null;
-      }catch(rollbackError){rollbackDetail=' Recovery could not finish: '+rollbackError.message;}
-    }
-    const suffix=job.result?' ZIP remains at '+job.result.archive+'. Use Undo to remove it.':'';
+    const suffix=job.result?' ZIP remains at '+job.result.archive+'.':'';
     const label=job.cancelled?'ZIP cancelled':job.result&&download?'Download failed':'ZIP failed';
-    finishStatus(job,label,(error.message||'The connection to Colab was lost.')+suffix+rollbackDetail,!job.cancelled||Boolean(rollbackDetail));
+    finishStatus(job,label,(error.message||'The connection to Colab was lost.')+suffix,!job.cancelled);
   }finally{
     await job.terminal?.close();
     // Completed jobs are safe to clean. A lost connection can leave a
     // process alive, so retain incomplete staging files for diagnosis.
     if(job.result||job.settled||(job.created&&!job.started))await cleanup(job);
-    jobs.delete(path);markUndoHistoryDirty();addMenuItems();
+    jobs.delete(path);addMenuItems();
   }
 }
 function cancelJob(path){
@@ -336,6 +342,9 @@ function cancelJob(path){
   // accept a stale Cancel click or replace its final status.
   if(!job||job.finished)return;
   job.cancelled=true;setStatus(job,'Cancelling…');
+}
+async function runDelete(target){
+  await runBulkDelete([{path:target.path,isDirectory:true}]);
 }
 function capture(event){
   if(!event.isTrusted)return;
@@ -350,7 +359,8 @@ document.addEventListener('contextmenu',capture,true);
 document.addEventListener('click',event=>{
   if(event.composedPath().some(node=>node?.classList?.contains('menu-button')))capture(event);
 },true);
-function addMenuItems(){
+function addMenuItems(updateSelection=true){
+  if(updateSelection)refreshSelection();
   if(!selected)return;
   const menus=[...document.querySelectorAll('[role="menu"][aria-label]')].filter(menu=>
     menu.getBoundingClientRect().width>0 && (menu.getAttribute('aria-label')||'').endsWith(': '+selected.name));
@@ -360,15 +370,17 @@ function addMenuItems(){
       // Keep Closure's menu open when keyboard focus enters an added action.
       menu.addEventListener('blur',event=>{
         const next=event.relatedTarget;
-        if(next?.closest?.('[data-cfz-action]')?.parentElement===menu)event.stopImmediatePropagation();
+        if(next?.closest?.('[data-cfz-action],[data-cfz-delete]')?.parentElement===menu)event.stopImmediatePropagation();
       },true);
     }
+    const bulk=hasBulkSelection(selected.path),nativeDelete=syncDeleteMenu(menu,selected);
     const currentJob=jobs.get(selected.path);
     const running=currentJob?.finished?null:currentJob?.kind;
-    const actions=selected.isDirectory
-      ? [['details','Folder details'],['zip','ZIP only'],['download','ZIP and download'],...(running==='zip'?[['cancel','Cancel ZIP']]:[]),['delete','Delete folder and contents…']]
+    const actions=bulk
+      ? (nativeDelete?[]:[['bulk-delete',`Delete selected items (${selectionState.items.size})`]])
+      : selected.isDirectory
+      ? [['details','Folder details'],['zip','ZIP only'],['download','ZIP and download'],...(running==='zip'?[['cancel','Cancel ZIP']]:[]),...(nativeDelete?[]:[['delete','Delete folder and contents']])]
       : [...(isExtractable(selected.path)?[['extract','Extract here']]:[]),...(running==='extract'?[['cancel','Cancel extraction']]:[])];
-    actions.push(['move','Move…'],['copy','Copy…']);
     for(const old of menu.querySelectorAll('[data-cfz-action]'))if(!actions.some(([action])=>action===old.dataset.cfzAction))old.remove();
     for(const [action,label] of actions){
       let button=menu.querySelector(`[data-cfz-action="${action}"]`);
@@ -401,8 +413,8 @@ function addMenuItems(){
           if(action==='cancel'){
             cancelJob(target.path);
           }else if(action==='details')void runDetails(target);
-          else if(action==='delete')void runRecoverableDelete(target);
-          else if(['rename','move','copy','newfolder'].includes(action))void runFileAction(target,action);
+          else if(action==='delete')void runDelete(target);
+          else if(action==='bulk-delete')void runBulkDelete();
           else if(action==='extract')void runExtract(target);
           else void run(target,action==='download');
         };
@@ -415,19 +427,25 @@ function addMenuItems(){
       let reason='';
       if(action==='delete'){try{deletionPath(selected.path);}catch(error){reason=error.message;}}
       if(action==='extract'){try{extractionPath(selected.path);}catch(error){reason=error.message;}}
-      const disabled=action!=='cancel' && (Boolean(reason)||jobs.size>0||undoBusy);
+      const disabled=action!=='cancel' && (Boolean(reason)||jobs.size>0);
       button.title=reason || (disabled?'Wait for the current operation in this location to finish.':action==='extract'?'Extract beside this archive. Replacement follows your extraction settings.':'');
       if(action==='delete')button.style.color=disabled?'':'#d93025';
       button.setAttribute('aria-disabled',String(disabled));button.classList.toggle('goog-menuitem-disabled',disabled);
     }
+    syncBulkMenuActions(menu,bulk);
   }
 }
-const observer=new MutationObserver(()=>{
-  addMenuItems();
+const observer=new MutationObserver(records=>{
+  addMenuItems(false);
+  const filesChanged=selectionMutations(records);
+  syncContentShortcut();
   // Colab replaces rows during refresh. Restore an active ring even while
   // waiting for a backend request that is not producing progress callbacks.
-  for(const job of jobs.values())if(!job.finished&&job.status&&!job.badge?.isConnected){
-    const {label,detail,error,progress}=job.status;setStatus(job,label,detail,error,progress);
+  for(const job of jobs.values()){
+    if(job.rows){if(filesChanged)updateBatchStatuses(job);}
+    else if(!job.finished&&job.status&&!job.badge?.isConnected){
+      const {label,detail,error,progress}=job.status;setStatus(job,label,detail,error,progress);
+    }
   }
 });
 observer.observe(document.body,{childList:true,subtree:true});
@@ -450,12 +468,12 @@ function showDetailsDialog(job){
     dialog[open]{display:flex;flex-direction:column}dialog::backdrop{background:#0006}
     header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 16px 16px 24px;border-bottom:1px solid var(--divider);flex-shrink:0}
     h2{font:400 20px/28px var(--colab-google-sans-font-family,'Google Sans',Roboto,Arial,sans-serif);margin:0}h3{font-size:14px;font-weight:500;margin:24px 0 8px}
-    button{font-family:inherit;font-size:14px;font-weight:500;line-height:20px;border:0;border-radius:4px;background:transparent;color:var(--accent);min-height:36px;padding:8px 16px;cursor:pointer}button:hover,summary:hover{background:var(--hover)}button:focus-visible,summary:focus-visible{outline:2px solid var(--colab-focus-ring-color,var(--accent));outline-offset:2px}
+    button{font-family:inherit;font-size:14px;font-weight:500;line-height:20px;border:0;border-radius:4px;background:transparent;color:var(--accent);min-height:36px;padding:8px 16px;cursor:pointer}button:hover{background:var(--hover)}button:focus-visible{outline:2px solid var(--colab-focus-ring-color,var(--accent));outline-offset:2px}
     header button{display:grid;place-items:center;min-height:32px;width:32px;padding:0;font:24px/1 Arial,sans-serif;color:var(--secondary);border-radius:50%}
     .content{padding:20px 24px;overflow:auto;min-height:0}p{margin:0}.path{font:13px/20px var(--colab-code-font-family,monospace);overflow-wrap:anywhere;color:var(--secondary)}.status-row{display:flex;align-items:center;gap:8px;margin-top:8px}.status{font-size:12px;color:var(--secondary)}#scan-progress{display:inline-flex}.muted{font-size:12px;color:var(--secondary)}.error{color:var(--colab-error-color,#b3261e)}.warning{margin-top:16px;padding:12px;border-radius:4px;background:var(--colab-warning-container-color,#fff2cc);color:var(--colab-on-warning-container-color,#5f4100);font-size:12px;overflow-wrap:anywhere}
     dl{margin:20px 0 0;padding-bottom:16px;border-bottom:1px solid var(--divider)}dl>div{display:grid;grid-template-columns:160px minmax(0,1fr);gap:16px;padding:6px 0}dt{color:var(--secondary)}dd{margin:0;font-variant-numeric:tabular-nums}#size{font-weight:500}#exact{display:block;font-size:12px;font-weight:400;color:var(--secondary);overflow-wrap:anywhere}
     table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:13px}th{text-align:left;color:var(--secondary);font-size:12px;font-weight:400}td,th{padding:8px 0;border-bottom:1px solid var(--divider)}td:first-child{overflow-wrap:anywhere;padding-right:16px}td:last-child,th:last-child{width:96px;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}tbody tr:last-child td{border-bottom:0}
-    details{margin-top:16px;font-size:12px;color:var(--secondary)}summary{width:fit-content;padding:4px 0;cursor:pointer;border-radius:2px}#notes{margin-top:8px}footer{display:flex;justify-content:flex-end;padding:8px 16px;border-top:1px solid var(--divider);flex-shrink:0}[hidden]{display:none!important}
+    footer{display:flex;justify-content:flex-end;padding:8px 16px;border-top:1px solid var(--divider);flex-shrink:0}[hidden]{display:none!important}
     @media(max-width:420px){header{padding-left:20px}.content{padding:16px 20px}dl>div{grid-template-columns:125px minmax(0,1fr);gap:12px}}
   `;
   const metric=(label,id)=>node('div',{},node('dt',{},label),node('dd',{id}));
@@ -464,10 +482,9 @@ function showDetailsDialog(job){
     node('header',{},node('h2',{id:'title'},'Folder details'),node('button',{id:'close','aria-label':'Close folder details'},'×')),
     node('div',{class:'content'},node('p',{class:'path',id:'folder-path'}),node('div',{class:'status-row'},node('span',{id:'scan-progress'}),node('p',{class:'status',id:'status',role:'status','aria-live':'polite',hidden:''},'Scanning folder…')),
     node('div',{id:'result',hidden:''},node('div',{id:'warning',class:'warning',hidden:''}),
-      node('dl',{},sizeMetric,metric('Files','files'),metric('Subfolders','folders'),metric('Symbolic links','links')),
+      node('dl',{},sizeMetric,metric('Files','files'),metric('Subfolders','folders')),
       node('h3',{},'Largest files'),node('p',{id:'empty',class:'muted',hidden:''},'No regular files found.'),
-      node('table',{id:'largest'},node('thead',{},node('tr',{},node('th',{scope:'col'},'File · relative path'),node('th',{scope:'col'},'Size'))),node('tbody')),
-      node('details',{},node('summary',{},'About this scan'),node('p',{id:'notes'})))),node('footer',{},node('button',{id:'done'},'Cancel scan')));
+      node('table',{id:'largest'},node('thead',{},node('tr',{},node('th',{scope:'col'},'File · relative path'),node('th',{scope:'col'},'Size'))),node('tbody')))),node('footer',{},node('button',{id:'done'},'Cancel scan')));
   shadow.append(style,dialog);
   const get=id=>shadow.getElementById(id);
   const progress=createProgress('Scanning folder…');get('scan-progress').append(progress.element);
@@ -495,7 +512,7 @@ function showDetailsDialog(job){
     get('status').hidden=true;get('status').textContent='';
     get('result').hidden=false;get('done').textContent='Close';
     get('size').textContent=formatBytes(result.bytes);get('exact').textContent=result.bytes.toLocaleString()+' bytes';
-    for(const key of ['files','folders','links'])get(key).textContent=result[key].toLocaleString();
+    for(const key of ['files','folders'])get(key).textContent=result[key].toLocaleString();
     if(result.skipped){
       get('warning').hidden=false;
       get('warning').textContent=`Incomplete totals: ${result.skipped.toLocaleString()} item${result.skipped===1?'':'s'} could not be fully scanned. `+result.errors.map(item=>item.path+': '+item.error).join(' · ');
@@ -506,9 +523,6 @@ function showDetailsDialog(job){
       name.textContent=file.path;size.textContent=formatBytes(file.size);size.title=file.size.toLocaleString()+' bytes';row.append(name,size);body.append(row);
     }
     get('empty').hidden=result.largest.length!==0;get('largest').hidden=result.largest.length===0;
-    get('notes').textContent='Hidden files included. Size is logical file bytes, not disk space; symbolic-link targets are not followed. Each file path is counted, including hard links. The selected folder itself is not counted as a subfolder. Live scan, not a snapshot.'+
-      (result.excluded?` ${result.excluded} temporary extension folder${result.excluded===1?'':'s'} excluded.`:'')+
-      (result.special?` ${result.special} special files excluded from file count and size.`:'');
   }};
   get('close').addEventListener('click',()=>view.close());get('done').addEventListener('click',()=>view.close());
   dialog.addEventListener('cancel',event=>{event.preventDefault();view.close();});
@@ -571,7 +585,7 @@ async function runDetails(target){
 async function runExtract(target){
   let path;
   try{path=extractionPath(target.path);}catch(error){setStatus(target,'Extraction failed',error.message,true);return;}
-  if(jobs.size||undoBusy)return;
+  if(jobs.size)return;
   const id=crypto.randomUUID();
   const job={kind:'extract',path,view:target.view,id,dir:'/content/.colab-folder-zip-'+id,cancelled:false,terminal:null};
   jobs.set(path,job);setStatus(job,'Checking archive…');addMenuItems();
@@ -583,9 +597,9 @@ async function runExtract(target){
     job.terminal=await openTerminal(ctx);
     await request(ctx,'/api/contents/'+encodePath(job.dir),'PUT',{type:'directory'});job.created=true;
     await put(ctx,job.dir+'/extract_archive.py',extractSource);
-    await put(ctx,job.dir+'/recovery.py',recoverySource);
+    await put(ctx,job.dir+'/file_operations.py',fileOperationsSource);
     if(job.cancelled)throw new Error('Cancelled.');
-    job.terminal.send(`python3 -B ${quote(job.dir+'/extract_archive.py')} ${quote(path)} ${quote(job.dir)} --undo${undoPreferences.overwrite?' --overwrite':''}\n`);
+    job.terminal.send(`python3 -B ${quote(job.dir+'/extract_archive.py')} ${quote(path)} ${quote(job.dir)}${preferences.overwrite?' --overwrite':''}\n`);
     job.started=true;
     let misses=0,cancelSent=false;
     while(true){
@@ -602,6 +616,7 @@ async function runExtract(target){
       if(['error','cancelled'].includes(result.state)){
         if(result.path!==path||result.destination!==path.slice(0,path.lastIndexOf('/')))throw new Error('Unexpected extraction status.');
         job.settled=true;job.partial=Boolean(result.partial);job.backendCancelled=result.state==='cancelled';
+        job.temporaryOriginals=Array.isArray(result.temporary_originals)?result.temporary_originals.filter(p=>typeof p==='string'):[];
         throw new Error(result.error||'Extraction failed.');
       }
       validateExtraction(result,path);
@@ -616,469 +631,36 @@ async function runExtract(target){
   }catch(error){
     const cancelled=job.backendCancelled||(!job.started&&job.cancelled);
     let detail=error.message||'The connection to Colab was lost.';
-    if(job.partial)detail+=' Later changes were preserved. Resolve the remaining conflicts, then click Undo again.';
+    if(job.partial){
+      detail+=' Some files could not be rolled back. Check the extracted contents before retrying.';
+      if(job.temporaryOriginals?.length)detail+=' Temporary originals: '+job.temporaryOriginals.join(', ');
+    }
     else if(job.started&&!job.settled)detail+=' Refresh Files to check for partially extracted contents before retrying.';
     if(job.settled)try{await document.querySelector('colab-file-browser')?.currentTree?.refresh?.();}catch{}
     finishStatus(job,cancelled?'Extraction cancelled':'Extraction failed',detail,!cancelled||job.partial);
   }finally{
     await job.terminal?.close();
     if(job.settled||(job.created&&!job.started))await cleanup(job);
-    jobs.delete(path);markUndoHistoryDirty();addMenuItems();
+    jobs.delete(path);addMenuItems();
   }
 }
 
-const recoverySource = "\"\"\"Runtime-local recovery journal. No operation follows symbolic-link parents.\n\nUndo quarantines outputs rather than destroying them. Recovery data lives on the\nsame filesystem as the changed file; the index lives in the current runtime.\n\"\"\"\nimport base64\nimport contextlib\nimport ctypes\nimport errno\nimport fcntl\nimport hashlib\nimport json\nimport os\nfrom pathlib import Path\nimport shutil\nimport stat\nimport sys\nimport time\nimport uuid\n\nPREFIX = '.colab-folder-zip-'\nFLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW\n\n\ndef atomic_json(path, value):\n    tmp = path.with_suffix('.tmp')\n    with tmp.open('w', encoding='utf-8') as out:\n        json.dump(value, out, ensure_ascii=True)\n        out.flush()\n        os.fsync(out.fileno())\n    os.replace(tmp, path)\n\n\ndef rename_exclusive(src, dst, src_fd, dst_fd):\n    \"\"\"Atomic no-replace rename, including directories. Fail closed otherwise.\"\"\"\n    libc = ctypes.CDLL(None, use_errno=True)\n    if hasattr(libc, 'renameat2'):\n        result = libc.renameat2(src_fd, os.fsencode(src), dst_fd, os.fsencode(dst), 1)\n    elif hasattr(libc, 'renameatx_np'):  # macOS local test fixtures\n        result = libc.renameatx_np(src_fd, os.fsencode(src), dst_fd, os.fsencode(dst), 4)\n    else:\n        raise OSError('This filesystem cannot safely rename without overwriting.')\n    if result:\n        code = ctypes.get_errno()\n        raise OSError(code, os.strerror(code))\n\n\ndef content_signature(value):\n    if isinstance(value, dict):\n        return {k: content_signature(v) for k, v in value.items() if k != 'identity'}\n    return value\n\n\ndef verified_copy(store, source, staged, expected):\n    if expected is None or expected['kind'] == 'link':\n        raise ValueError('Choose a regular file or folder.')\n    if expected['kind'] == 'directory':\n        shutil.copytree(source, staged, symlinks=True)\n    else:\n        # The staging filename is private to this operation.\n        with staged.open('xb'):\n            pass\n        shutil.copy2(source, staged, follow_symlinks=False)\n    if store.fingerprint(source) != expected:\n        raise RuntimeError('Source changed during copying; source was preserved.')\n    after = store.fingerprint(staged)\n    if content_signature(expected) != content_signature(after):\n        raise RuntimeError('The copy could not be verified; source was preserved.')\n    return after\n\n\nclass Store:\n    def __init__(self, root=Path('/content')):\n        self.root = Path(root).absolute()\n        self.home = self.root / (PREFIX + 'undo')\n        self.home.mkdir(mode=0o700, exist_ok=True)\n        if self.home.is_symlink():\n            raise ValueError('Recovery storage must not be a symbolic link.')\n\n    @contextlib.contextmanager\n    def locked(self):\n        fd = os.open(self.home / 'lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)\n        try:\n            fcntl.flock(fd, fcntl.LOCK_EX)\n            yield\n        finally:\n            os.close(fd)\n\n    def path(self, value, internal=False):\n        p = Path(value)\n        if not p.is_absolute() or any(c in str(value) for c in ('\\x00',)) or any(\n                ord(c) < 32 or ord(c) == 127 for c in str(value)):\n            raise ValueError('Choose an absolute path inside /content.')\n        if any(c in ('.', '..') for c in str(value).split('/')):\n            raise ValueError('Relative path components are not supported.')\n        parts = p.relative_to(self.root).parts\n        if not parts or (not internal and any(c.startswith(PREFIX) for c in parts)):\n            raise ValueError('Runtime roots and recovery folders are protected.')\n        if parts[0] == 'drive' and (len(parts) == 1 or\n                (parts[1] == 'MyDrive' and len(parts) == 2) or\n                (parts[1] == 'Shareddrives' and len(parts) <= 3)):\n            raise ValueError('Drive roots are protected.')\n        return p\n\n    @contextlib.contextmanager\n    def parent(self, path):\n        # Pin all ancestors. No symlink traversal, even if a parent is swapped.\n        fd = os.open('/', FLAGS)\n        try:\n            for part in Path(path).parent.parts[1:]:\n                child = os.open(part, FLAGS, dir_fd=fd)\n                os.close(fd)\n                fd = child\n            yield fd\n        finally:\n            os.close(fd)\n\n    def fingerprint(self, path):\n        \"\"\"Content hash plus identity/metadata. Changes during hashing fail.\"\"\"\n        path = Path(path)\n        with self.parent(path) as parent:\n            return self._fingerprint(parent, path.name)\n\n    def _fingerprint(self, parent, name):\n        try:\n            before = os.stat(name, dir_fd=parent, follow_symlinks=False)\n        except FileNotFoundError:\n            return None\n        identity = [before.st_dev, before.st_ino, before.st_mode]\n        if stat.S_ISLNK(before.st_mode):\n            return {'kind': 'link', 'identity': identity, 'target': os.readlink(name, dir_fd=parent)}\n        if stat.S_ISREG(before.st_mode):\n            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)\n            with os.fdopen(fd, 'rb') as inp:\n                if os.fstat(inp.fileno()).st_ino != before.st_ino:\n                    raise RuntimeError('File was replaced during verification.')\n                h = hashlib.sha256()\n                for chunk in iter(lambda: inp.read(1024 * 1024), b''):\n                    h.update(chunk)\n                after = os.fstat(inp.fileno())\n            if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (\n                    after.st_size, after.st_mtime_ns, after.st_ctime_ns):\n                raise RuntimeError('File changed during verification.')\n            return {'kind': 'file', 'identity': identity, 'size': before.st_size,\n                    'mtime': before.st_mtime_ns, 'hash': h.hexdigest()}\n        if stat.S_ISDIR(before.st_mode):\n            fd = os.open(name, FLAGS, dir_fd=parent)\n            try:\n                if os.fstat(fd).st_ino != before.st_ino:\n                    raise RuntimeError('Directory was replaced during verification.')\n                names = sorted(os.listdir(fd))\n                children = {}\n                for child in names:\n                    value = self._fingerprint(fd, child)\n                    if value is None:\n                        raise RuntimeError('Folder changed during verification.')\n                    if value['identity'][0] != before.st_dev:\n                        raise ValueError('Folders containing mount points are not supported.')\n                    children[child] = value\n                if names != sorted(os.listdir(fd)):\n                    raise RuntimeError('Folder changed during verification.')\n                return {'kind': 'directory', 'identity': identity, 'children': children}\n            finally:\n                os.close(fd)\n        raise ValueError('Special files are not supported.')\n\n    def move(self, source, destination, expected):\n        source, destination = Path(source), Path(destination)\n        with self.parent(source) as sf, self.parent(destination) as df:\n            if self._fingerprint(sf, source.name) != expected:\n                raise RuntimeError('The item changed; it was preserved.')\n            rename_exclusive(source.name, destination.name, sf, df)\n\n    def load(self, ident):\n        if not isinstance(ident, str) or str(uuid.UUID(ident)) != ident:\n            raise ValueError('Invalid recovery record.')\n        data = json.loads((self.home / (ident + '.json')).read_text())\n        if data['id'] != ident:\n            raise ValueError('Invalid recovery record.')\n        return data\n\n    def list(self):\n        records = []\n        for file in self.home.glob('*.json'):\n            try:\n                d = self.load(file.stem)\n                if d['state'] != 'undone':\n                    item = {k: d[k] for k in ('id', 'label', 'time', 'state')}\n                    paths = [c['path'] for c in d['changes'] if not c.get('undone')]\n                    item.update(paths=paths[:5], count=len(paths))\n                    records.append(item)\n            except (OSError, ValueError, KeyError):\n                continue\n        return sorted(records, key=lambda d: d['time'], reverse=True)\n\n    def undo(self, ident):\n        d = self.load(ident)\n        conflicts = []\n        for change in reversed(d['changes']):\n            if change.get('undone'):\n                continue\n            path = self.path(change['path'])\n            try:\n                if change['kind'] == 'move':\n                    source = self.path(change['source'])\n                    if self.fingerprint(source) == change['after'] and self.fingerprint(path) is None:\n                        change['undone'] = True\n                        atomic_json(self.home / (ident + '.json'), d)\n                        continue\n                    if self.fingerprint(source) is not None:\n                        raise RuntimeError('The original location is occupied.')\n                    self.move(path, source, change['after'])\n                elif change['kind'] == 'directory':\n                    with self.parent(path) as parent:\n                        now = self._fingerprint(parent, path.name)\n                        if now is None:\n                            pass\n                        elif now['identity'] != change['after']['identity'] or now.get('children'):\n                            raise RuntimeError('The folder contains later changes.')\n                        else:\n                            os.rmdir(path.name, dir_fd=parent)\n                else:\n                    now = self.fingerprint(path)\n                    if now is None and not change.get('published', True) and not change.get('backup'):\n                        change['undone'] = True\n                        atomic_json(self.home / (ident + '.json'), d)\n                        continue\n                    # If publication failed after backing up the original, its\n                    # empty location can still be restored without deleting data.\n                    unpublished = now is None and change.get('backup') and not change.get('published', True)\n                    if now != change.get('after') and not unpublished:\n                        raise RuntimeError('The item was changed or replaced after this action.')\n                    backup = change.get('backup')\n                    if backup:\n                        backup = self.path(backup, internal=True)\n                        if self.fingerprint(backup) != change['before']:\n                            raise RuntimeError('The recovery copy was changed or is unavailable.')\n                    if now is not None:\n                        bucket = self.path(change['bucket'], internal=True)\n                        discarded = bucket / ('undone-' + uuid.uuid4().hex)\n                        self.move(path, discarded, now)\n                    if backup:\n                        try:\n                            self.move(backup, path, change['before'])\n                        except BaseException:\n                            # Restore the visible output if restoring the original failed.\n                            if now is not None and self.fingerprint(path) is None:\n                                self.move(discarded, path, now)\n                            raise\n                change['undone'] = True\n                atomic_json(self.home / (ident + '.json'), d)\n            except (OSError, ValueError, RuntimeError) as error:\n                conflicts.append({'path': str(path), 'reason': str(error)})\n        d['state'] = 'conflict' if conflicts else 'undone'\n        atomic_json(self.home / (ident + '.json'), d)\n        return {'id': ident, 'state': d['state'], 'conflicts': conflicts}\n\n\nclass Journal:\n    def __init__(self, store, label, ident=None):\n        self.store = store\n        self.data = store.load(ident) if ident else {\n            'id': str(uuid.uuid4()), 'label': label, 'time': time.time(),\n            'state': 'pending', 'changes': []}\n        if ident and self.data['state'] != 'pending':\n            raise RuntimeError('This operation has finished or was cancelled; restart the upload.')\n        self.save()\n\n    @property\n    def id(self):\n        return self.data['id']\n\n    def save(self):\n        atomic_json(self.store.home / (self.id + '.json'), self.data)\n\n    def bucket(self, path):\n        path = Path(path)\n        parts = path.relative_to(self.store.root).parts\n        anchor = self.store.root\n        if parts[:2] == ('drive', 'MyDrive'):\n            anchor = self.store.root / 'drive' / 'MyDrive'\n        elif parts[:2] == ('drive', 'Shareddrives') and len(parts) > 3:\n            anchor = self.store.root.joinpath(*parts[:3])\n        # A custom mount keeps its recovery files on that filesystem.\n        for ancestor in reversed(path.parent.parents):\n            if ancestor != self.store.root and self.store.root in ancestor.parents and os.path.ismount(ancestor):\n                anchor = ancestor\n        if os.path.ismount(path.parent):\n            anchor = path.parent\n        bucket = anchor / (PREFIX + 'recovery-' + self.id)\n        with self.store.parent(bucket) as parent:\n            try:\n                os.mkdir(bucket.name, 0o700, dir_fd=parent)\n            except FileExistsError:\n                pass\n            fd = os.open(bucket.name, FLAGS, dir_fd=parent)\n            os.close(fd)\n        return bucket\n\n    def created(self, path, directory=False, expected=None):\n        path = self.store.path(str(path))\n        after = self.store.fingerprint(path)\n        if expected is not None and after != expected:\n            raise RuntimeError('The created item changed before recording; it was preserved.')\n        change = {'kind': 'directory' if directory else 'write',\n                  'path': str(path), 'after': after,\n                  'bucket': str(self.bucket(path))}\n        self.data['changes'].append(change)\n        self.save()\n        return change\n\n    def remove(self, path, expected=None):\n        path = self.store.path(str(path))\n        before = self.store.fingerprint(path)\n        if expected is not None and before != expected:\n            raise RuntimeError('The item changed before replacement; it was preserved.')\n        if before is None:\n            raise FileNotFoundError(str(path))\n        if os.path.ismount(path):\n            raise ValueError('Mount points are protected.')\n        bucket = self.bucket(path)\n        backup = bucket / uuid.uuid4().hex\n        change = {'kind': 'write', 'path': str(path), 'before': before,\n                  'backup': str(backup), 'bucket': str(bucket), 'after': None}\n        # Save intent first. A crash before the rename is a conflict, never a\n        # licence to delete whichever file later appears at this path.\n        self.data['changes'].append(change)\n        self.save()\n        self.store.move(path, backup, before)\n        return change\n\n    def write(self, path, payload, replace=False):\n        path = self.store.path(str(path))\n        before = self.store.fingerprint(path)\n        if before is not None and (not replace or before['kind'] != 'file'):\n            raise FileExistsError('Destination exists; nothing was overwritten.')\n        bucket = self.bucket(path)\n        staged = bucket / ('staged-' + uuid.uuid4().hex)\n        with staged.open('xb') as out:\n            out.write(payload)\n            out.flush()\n            os.fsync(out.fileno())\n        if before is not None:\n            change = self.remove(path, expected=before)\n        else:\n            change = {'kind': 'write', 'path': str(path), 'after': None, 'bucket': str(bucket)}\n            self.data['changes'].append(change)\n        # Record the exact staged fingerprint before making it visible.\n        change['after'] = self.store.fingerprint(staged)\n        change['published'] = False\n        self.save()\n        self.store.move(staged, path, change['after'])\n        change['published'] = True\n        self.save()\n        return change\n\n    def finish(self):\n        self.data['state'] = 'ready'\n        self.save()\n        return self.id\n\n\ndef native(store, args):\n    method = args['method']\n    if method == 'POST':\n        path = Path(args['path'])\n        if not path.is_absolute() or any(p in ('.', '..') or p.startswith(PREFIX) for p in args['path'].split('/')):\n            raise ValueError('Invalid destination folder.')\n        path.relative_to(store.root)\n        with store.parent(path / '_new_item') as parent:\n            pass\n    else:\n        path = store.path(args['path'])\n    body = args.get('body') or {}\n    journal = Journal(store, args.get('label', method + ' ' + path.name), args.get('id'))\n    try:\n        if method == 'DELETE':\n            journal.remove(path)\n        elif method == 'PATCH':\n            destination = store.path('/' + body['path'].lstrip('/'))\n            if destination == path or path in destination.parents:\n                raise ValueError('Choose a different destination outside this folder.')\n            before = store.fingerprint(path)\n            if before is None:\n                raise FileNotFoundError(str(path))\n            journal.data['changes'].append({'kind': 'move', 'source': str(path),\n                                           'path': str(destination), 'after': before})\n            journal.save()\n            try:\n                store.move(path, destination, before)\n            except OSError as error:\n                if error.errno != errno.EXDEV:\n                    raise\n                # Cross-filesystem move: verify a complete copy before touching\n                # the source, then keep that source in recoverable storage.\n                journal.data['changes'].pop()\n                journal.save()\n                bucket = journal.bucket(destination)\n                staged = bucket / ('move-' + uuid.uuid4().hex)\n                after = verified_copy(store, path, staged, before)\n                journal.remove(path, expected=before)\n                change = {'kind': 'write', 'path': str(destination), 'after': after,\n                          'bucket': str(bucket), 'published': False}\n                journal.data['changes'].append(change)\n                journal.save()\n                store.move(staged, destination, after)\n                change['published'] = True\n                journal.save()\n            path = destination\n        elif method == 'POST':\n            # Jupyter new/copy requests address the destination directory.\n            if body.get('copy_from'):\n                source = store.path('/' + body['copy_from'].lstrip('/'))\n                name = body.get('name') or source.name\n            else:\n                source = None\n                name = body.get('name') or ('Untitled Folder' if body.get('type') == 'directory' else 'untitled.txt')\n            if (not isinstance(name, str) or Path(name).name != name or name in ('.', '..')\n                    or name.startswith(PREFIX) or any(ord(c) < 32 or ord(c) == 127 for c in name)):\n                raise ValueError('Invalid new item name.')\n            destination = path / name\n            i = 1\n            while store.fingerprint(destination) is not None:\n                destination = path / (Path(name).stem + ' (' + str(i) + ')' + Path(name).suffix)\n                i += 1\n            if source:\n                if source == destination or source in destination.parents:\n                    raise ValueError('Cannot copy a folder into itself.')\n                expected = store.fingerprint(source)\n                bucket = journal.bucket(destination)\n                staged = bucket / 'copy'\n                after = verified_copy(store, source, staged, expected)\n                change = {'kind': 'write', 'path': str(destination),\n                          'after': after, 'bucket': str(bucket), 'published': False}\n                journal.data['changes'].append(change)\n                journal.save()\n                store.move(staged, destination, after)\n                change['published'] = True\n                journal.save()\n            elif body.get('type') == 'directory':\n                with store.parent(destination) as parent:\n                    os.mkdir(destination.name, 0o755, dir_fd=parent)\n                journal.created(destination, directory=True)\n            else:\n                journal.write(destination, b'')\n            path = destination\n        elif method == 'PUT':\n            if body.get('type') == 'directory':\n                with store.parent(path) as parent:\n                    os.mkdir(path.name, 0o755, dir_fd=parent)\n                journal.created(path, directory=True)\n            else:\n                fmt = body.get('format', 'text')\n                content = body.get('content', '')\n                if fmt == 'base64':\n                    payload = base64.b64decode(content, validate=True)\n                elif fmt == 'text' and isinstance(content, str):\n                    payload = content.encode('utf-8')\n                elif fmt == 'json':\n                    payload = json.dumps(content).encode('utf-8')\n                else:\n                    raise ValueError('Unsupported upload format.')\n                chunk = body.get('chunk')\n                if chunk is not None:\n                    bucket = journal.bucket(path)\n                    staged = bucket / 'upload'\n                    if chunk == 1:\n                        journal.data['upload'] = {'path': str(path), 'before': store.fingerprint(path), 'next': 2}\n                        with staged.open('xb') as out:\n                            out.write(payload)\n                    else:\n                        upload = journal.data.get('upload')\n                        if not upload or upload['path'] != str(path) or (chunk != -1 and chunk != upload['next']):\n                            raise ValueError('Upload chunks arrived out of order.')\n                        with staged.open('ab') as out:\n                            out.write(payload)\n                        upload['next'] += 1\n                    journal.save()\n                    if chunk != -1:\n                        return {'id': journal.id, 'path': str(path), 'state': 'pending'}\n                    if store.fingerprint(path) != journal.data['upload']['before']:\n                        raise RuntimeError('Destination changed during upload.')\n                    # Publish without reading the complete upload into memory.\n                    before = store.fingerprint(path)\n                    change = journal.remove(path, expected=before) if before else {\n                        'kind': 'write', 'path': str(path), 'bucket': str(bucket)}\n                    if not before:\n                        journal.data['changes'].append(change)\n                    change['after'] = store.fingerprint(staged)\n                    change['published'] = False\n                    journal.save()\n                    store.move(staged, path, change['after'])\n                    change['published'] = True\n                    journal.save()\n                else:\n                    journal.write(path, payload, replace=True)\n        else:\n            raise ValueError('Unsupported file operation; no changes made.')\n        return {'id': journal.finish(), 'path': str(path), 'state': 'ready'}\n    except BaseException:\n        # Completed steps are recoverable; automatic rollback preserves conflicts.\n        store.undo(journal.id)\n        raise\n\n\ndef main():\n    args_file, result_file = map(Path, sys.argv[1:3])\n    try:\n        atomic_json(result_file, {'running': True})\n        args = json.loads(args_file.read_text())\n        store = Store()\n        with store.locked():\n            if args['action'] == 'list':\n                result = {'records': store.list(), 'server_time': time.time()}\n            elif args['action'] == 'undo':\n                result = store.undo(args['id'])\n            elif args['action'] == 'native':\n                result = native(store, args)\n            else:\n                raise ValueError('Unknown recovery action.')\n        result['ok'] = True\n    except BaseException as error:\n        result = {'ok': False, 'error': str(error)}\n    atomic_json(result_file, result)\n\n\nif __name__ == '__main__':\n    main()\n";
-// File recovery is runtime-scoped; navigation and preferences are tab-scoped.
-const undoPreferencesKey='colab-extras-preferences-v1';
-const undoDefaults={overwrite:false,managedDownloads:false};
-let undoPreferences={...undoDefaults};
-try{Object.assign(undoPreferences,JSON.parse(localStorage.getItem(undoPreferencesKey)||'{}'));}catch{}
-const settingHistory=[];
-let undoQueue=Promise.resolve(),undoBusy=false,undoRuntime=null;
-let undoClickPending=false,undoFeedbackTimer=null;
-const uploadTransactions=new Map();
-const locationHistory=[],folderHistory=[];
-let runtimeHistory=null,historyDirty=true,historyLoading=false,nextHistoryCheck=0;
-let restoringFolder=false;
-const pendingFolderActions=new WeakSet();
-let currentLocation=null,navigatingBack=false;
-const internalRequest=Symbol('Colab Extras internal request');
-function serialUndo(task){
-  const result=undoQueue.then(task,task);
-  undoQueue=result.catch(()=>{});
-  return result;
-}
-async function recoveryCall(args,ctx=context()){
-  assertRuntime(ctx);
-  const dir='/content/.colab-folder-zip-'+crypto.randomUUID();
-  let terminal;
-  try{
-    await request(ctx,'/api/contents/'+encodePath(dir),'PUT',{type:'directory'});
-    await put(ctx,dir+'/recovery.py',recoverySource);
-    await put(ctx,dir+'/args.json',JSON.stringify(args));
-    terminal=await openTerminal(ctx);
-    terminal.send(`python3 -B ${quote(dir+'/recovery.py')} ${quote(dir+'/args.json')} ${quote(dir+'/result.json')}\n`);
-    // Hashing a large dataset can take minutes. Never abandon a live worker
-    // merely because it has not yet produced its final result.
-    let misses=0;
-    while(true){
-      await sleep(500);
-      let response;
-      try{response=await request(ctx,'/files/'+encodePath(dir+'/result.json')+'?t='+Date.now());}
-      catch(error){if(error.status===404&&++misses<60)continue;throw error;}
-      const result=await response.json();
-      if(result.running)continue;
-      if(!result.ok)throw new Error(result.error||'Recovery failed.');
-      assertRuntime(ctx);
-      if(args.action==='list'){
-        result.receivedAt=Date.now();
-        runtimeHistory=result;historyDirty=false;
-      }else if(args.action==='native')markUndoHistoryDirty();
-      else if(args.action==='undo'&&runtimeHistory&&!result.conflicts.length){
-        runtimeHistory.records=runtimeHistory.records.filter(record=>record.id!==args.id);
-      }
-      updateUndoButton();
-      return result;
-    }
-  }finally{
-    if(args.action==='native')markUndoHistoryDirty();
-    await terminal?.close();
-    // The journal and recovery copies are outside this disposable job directory.
-    for(const name of ['recovery.py','args.json','result.json']){
-      try{await request(ctx,'/api/contents/'+encodePath(dir+'/'+name),'DELETE');}catch{}
-    }
-    try{await request(ctx,'/api/contents/'+encodePath(dir),'DELETE');}catch{}
-  }
-}
-function bridgeDownload(args){
-  return new Promise((resolve,reject)=>{
-    const id=crypto.randomUUID();
-    const listener=event=>{
-      if(event.source!==window||event.data?.channel!=='colab-extras-isolated'||event.data.id!==id)return;
-      window.removeEventListener('message',listener);clearTimeout(timer);
-      event.data.error?reject(new Error(event.data.error)):resolve(event.data.result);
-    };
-    const timer=setTimeout(()=>{window.removeEventListener('message',listener);reject(new Error('Download helper unavailable.'));},30000);
-    window.addEventListener('message',listener);
-    window.postMessage({channel:'colab-extras-main',id,args},location.origin);
-  });
-}
-async function managedDownload(job){
-  const permission=await bridgeDownload({action:'permission'});
-  if(!permission.granted)throw new Error('Enable managed downloads in the Colab Extras extension popup first.');
-  const response=await request(job.ctx,'/files/'+encodePath(job.result.archive));
-  const blob=await response.blob();
-  if(job.cancelled)throw new Error('Cancelled.');
-  const url=URL.createObjectURL(blob);
-  try{
-    const result=await bridgeDownload({action:'download',url,name:job.result.archive.split('/').pop(),operation:job.result.undo});
-    job.downloadId=result.id;
-  }finally{
-    // downloads.download resolves when Chrome has accepted the request.
-    setTimeout(()=>URL.revokeObjectURL(url),60000);
-  }
-}
-function nativeBody(options){
-  if(options.body===undefined)return {};
-  if(typeof options.body!=='string')throw new Error('This file operation cannot be protected by Undo. No changes were made.');
-  return JSON.parse(options.body);
-}
-function hookNativeFiles(){
-  let ctx;
-  try{ctx=context();}catch{return;}
-  if(undoRuntime!==ctx.runtime){
-    undoRuntime=ctx.runtime;uploadTransactions.clear();locationHistory.length=0;folderHistory.length=0;currentLocation=null;runtimeHistory=null;historyDirty=true;nextHistoryCheck=0;
-  }
-  const files=document.querySelector('colab-file-browser')?.currentTree?.files;
-  if(files&&files.cfzUndoWrite!==ctx.runtime&&typeof files.write==='function'){
-    files.cfzUndoWrite=ctx.runtime;
-    // Colab's current writer sends numbered chunks with no final -1 marker.
-    // Own this complete call so completion/cancellation cannot be guessed.
-    files.write=(parent,name,buffer,progress)=>serialUndo(async()=>{
-      if(jobs.size)throw new Error('Wait for the active Colab Extras operation.');
-      const path=deletionPath('/'+[parent,name].filter(Boolean).join('/').replace(/^\/+/,''));
-      let id;
-      undoBusy=true;
-      try{
-        const bytes=new Uint8Array(buffer);
-        const count=Math.max(1,Math.ceil(bytes.length/1048576));
-        for(let i=0;i<count;i++){
-          if(progress?.canceled)throw new Error('Upload cancelled.');
-          const slice=bytes.subarray(i*1048576,(i+1)*1048576);
-          let binary='';
-          for(let offset=0;offset<slice.length;offset+=8192)binary+=String.fromCharCode(...slice.subarray(offset,offset+8192));
-          const result=await recoveryCall({action:'native',method:'PUT',path,id,
-            label:'Upload / replace: '+name,
-            body:{type:'file',format:'base64',content:btoa(binary),...(count>1?{chunk:i===0?1:i===count-1?-1:i+1}:{})}},ctx);
-          id=result.id;
-          progress?.update?.((i+1)/count);
-        }
-        if(progress?.canceled)throw new Error('Upload cancelled.');
-        return new Response('{}',{status:200,headers:{'Content-Type':'application/json'}});
-      }catch(error){
-        if(id)try{await recoveryCall({action:'undo',id},ctx);}catch{}
-        throw error;
-      }finally{undoBusy=false;}
-    });
-  }
-  if(ctx.xhr.cfzUndoRuntime===ctx.runtime)return;
-  const original=ctx.xhr.cfzOriginalFetch||ctx.xhr.fetch.bind(ctx.xhr);
-  ctx.xhr.cfzUndoRuntime=ctx.runtime;
-  ctx.xhr.cfzOriginalFetch=original;
-  ctx.xhr.fetch=function(url,options={}){
-    const method=(options.method||'GET').toUpperCase();
-    if(options[internalRequest]||!['PUT','POST','PATCH','DELETE'].includes(method)||typeof url!=='string')return original(url,options);
-    let path;
-    try{
-      const parsed=new URL(url,location.origin);
-      if(!parsed.pathname.startsWith('/api/contents/'))return original(url,options);
-      path='/'+decodeURIComponent(parsed.pathname.slice('/api/contents/'.length));
-      if(path!=='/content'&&!path.startsWith('/content/'))return original(url,options);
-      if(method==='POST'){
-        normalizePath(path);
-        if(path.split('/').some(p=>p.startsWith('.colab-folder-zip-')))throw new Error('Recovery folders are protected.');
-      }else deletionPath(path);
-    }catch(error){return Promise.reject(error);}
-    return serialUndo(async()=>{
-      assertRuntime(ctx);
-      if(jobs.size)throw new Error('Wait for the active Colab Extras operation before changing files.');
-      undoBusy=true;
-      try{
-        const body=nativeBody(options);
-        const key=path;
-        if(body.chunk===1&&uploadTransactions.has(key))throw new Error('An upload is already active for this path.');
-        const prior=body.chunk!==undefined&&body.chunk!==1?uploadTransactions.get(key):undefined;
-        if(body.chunk!==undefined&&body.chunk!==1&&!prior)throw new Error('Upload history is unavailable; restart the upload.');
-        const label=method==='DELETE'?'Delete: ':method==='PATCH'?'Rename / move: ':body.copy_from?'Copy: ':body.type==='directory'?'Create folder: ':'Upload / replace: ';
-        const result=await recoveryCall({action:'native',method,path,body,id:prior,label:label+path.split('/').pop()},ctx);
-        if(result.state==='pending')uploadTransactions.set(key,result.id);else uploadTransactions.delete(key);
-        if(method==='DELETE')return new Response(null,{status:204});
-        if(result.state==='pending'){
-          return new Response(JSON.stringify({name:path.split('/').pop(),path:path.slice(1),type:body.type||'file',
-            format:null,content:null,writable:true,created:new Date().toISOString(),last_modified:new Date().toISOString(),size:0}),
-            {status:200,headers:{'Content-Type':'application/json'}});
-        }
-        return original('/api/contents/'+encodePath(result.path)+'?content=0',{method:'GET'});
-      }finally{undoBusy=false;}
-    });
-  };
-}
-async function runRecoverableDelete(target){
-  let path;
-  try{path=deletionPath(target.path);}catch(error){window.alert(error.message);return;}
-  if(jobs.size||undoBusy)return;
-  if(!window.confirm(`Move this folder and its contents to Colab Extras recovery storage?\n\n${path}\n\nUndo can restore it while this runtime and its recovery data remain available. Retained files still use disk space.`))return;
-  const job={kind:'delete',path,view:target.view,id:crypto.randomUUID()};
-  jobs.set(path,job);setStatus(job,'Moving to recovery…');
-  try{
-    await serialUndo(()=>recoveryCall({action:'native',method:'DELETE',path,label:'Delete folder: '+path.split('/').pop()}));
-    finishStatus(job,'Folder recoverable','Use Undo beside Refresh to restore it.');
-    await document.querySelector('colab-file-browser')?.currentTree?.refresh?.();
-  }catch(error){finishStatus(job,'Delete failed',error.message,true);}
-  finally{jobs.delete(path);addMenuItems();}
-}
-async function runFileAction(target,action){
-  let path,body,method='PATCH';
-  try{
-    path=deletionPath(target.path);
-    if(jobs.size||undoBusy)throw new Error('Wait for the active operation to finish.');
-    if(action==='newfolder'){
-      const name=window.prompt('New folder name:');
-      if(name===null)return;
-      if(!name||/[\\/]/.test(name)||name==='.'||name==='..')throw new Error('Enter a folder name, without a path.');
-      method='POST';body={type:'directory',name};
-    }else{
-      const destination=window.prompt(action==='copy'?'Copy into this existing folder:':action==='rename'?'New name:':'Move to this full destination path:',action==='rename'?path.split('/').pop():path.slice(0,path.lastIndexOf('/')));
-      if(destination===null)return;
-      if(action==='copy'){
-        body={copy_from:path.slice(1)};path=normalizePath(destination);method='POST';
-      }else{
-        const dest=action==='rename'?path.slice(0,path.lastIndexOf('/')+1)+destination:destination;
-        body={path:deletionPath(dest).slice(1)};
-      }
-    }
-    undoBusy=true;
-    await serialUndo(()=>recoveryCall({action:'native',method,path,body,label:action+': '+target.path.split('/').pop()}));
-    await document.querySelector('colab-file-browser')?.currentTree?.refresh?.();
-  }catch(error){window.alert(error.message);}
-  finally{undoBusy=false;}
-}
-function observeLocation(){
-  const browser=document.querySelector('colab-file-browser');
-  const tree=browser?.currentTree;
-  // Colab versions expose the displayed tree root on one of these properties.
-  const candidate=tree?.files?.rootPath;
-  if(typeof candidate!=='string')return;
-  const path='/'+candidate.replace(/^\/+/,'');
-  if(currentLocation&&currentLocation.path!==path&&!navigatingBack){
-    locationHistory.push({...currentLocation,time:Date.now()});
-    if(locationHistory.length>100)locationHistory.shift();
-  }
-  currentLocation={path};
-  updateUndoButton();
-}
-async function previousLocation(){
-  const previous=locationHistory[locationHistory.length-1];
-  const browser=document.querySelector('colab-file-browser');
-  if(!previous)throw new Error('No previous sidebar location in this tab.');
-  const tree=browser?.currentTree;
-  if(!tree?.files?.getFile||!tree.refresh)throw new Error('The Files sidebar is unavailable.');
-  const startingPath=tree.files.rootPath;
-  const folder=await tree.files.getFile(previous.path);
-  if(!folder.isDirectory)throw new Error('The previous folder is no longer available.');
-  if(locationHistory[locationHistory.length-1]!==previous||tree.files.rootPath!==startingPath)throw new Error('The sidebar location changed. Click Undo again.');
-  navigatingBack=true;
-  try{tree.files.rootPath=previous.path.slice(1);await tree.refresh();locationHistory.pop();currentLocation={path:previous.path};}
-  finally{navigatingBack=false;}
-}
-function changeUndoPreference(key,value){
-  if(jobs.size||undoBusy)throw new Error('Wait for the active operation to finish.');
-  if(!Object.hasOwn(undoDefaults,key)||typeof value!=='boolean')throw new Error('Unknown setting.');
-  if(undoPreferences[key]===value)return;
-  const next={...undoPreferences,[key]:value};
-  localStorage.setItem(undoPreferencesKey,JSON.stringify(next));
-  settingHistory.push({before:{...undoPreferences},time:Date.now()});
-  undoPreferences=next;updateUndoButton();
-}
-function restoreUndoSettings(){
-  const previous=settingHistory[settingHistory.length-1];
-  if(!previous)throw new Error('No settings changes to undo in this tab.');
-  localStorage.setItem(undoPreferencesKey,JSON.stringify(previous.before));
-  undoPreferences=previous.before;settingHistory.pop();
-}
-function undoFeedback(text,error=false){
-  if(!error){
-    clearTimeout(undoFeedbackTimer);
-    const previous=document.querySelector('[data-cfz-undo-feedback]');
-    if(previous)previous.hidden=true;
-    return;
-  }
-  const button=document.querySelector('[data-cfz-undo-button]');
-  if(!button)return;
-  let message=document.querySelector('[data-cfz-undo-feedback]');
-  if(!message){
-    message=element('div');message.dataset.cfzUndoFeedback='';
-    message.setAttribute('role','status');message.setAttribute('aria-live','polite');
-    message.style.cssText='font:12px/1.5 Roboto,Arial,sans-serif;margin:6px 12px;overflow-wrap:anywhere;';
-    button.parentElement.after(message);
-  }
-  clearTimeout(undoFeedbackTimer);message.hidden=false;message.textContent=text;
-  message.style.color=error?'var(--colab-error-color,#b3261e)':'var(--colab-secondary-text-color,inherit)';
-  if(error)undoFeedbackTimer=null;
-  else undoFeedbackTimer=setTimeout(()=>{message.hidden=true;},10000);
-}
-function newestUndoAction(records,localActions,serverTime,receivedAt){
-  // Compare runtime journal times with tab actions without relying on the
-  // runtime and laptop clocks being identical.
-  const offset=Number.isFinite(serverTime)?receivedAt-serverTime*1000:0;
-  const actions=records.map(record=>({kind:'file',record,time:record.time*1000+offset}));
-  actions.push(...localActions);
-  return actions.sort((a,b)=>b.time-a.time)[0];
-}
-async function undoLastAction(){
-  if(undoClickPending)return;
-  if(jobs.size||undoBusy){undoFeedback('Wait for the active operation to finish.');return;}
-  undoClickPending=true;undoBusy=true;
-  updateUndoButton();
-  undoFeedback('Undoing the last action…');
-  try{
-    hookNativeFiles();
-    observeLocation();
-    const setting=settingHistory[settingHistory.length-1],location=locationHistory[locationHistory.length-1],folder=folderHistory[folderHistory.length-1];
-    const localActions=[];
-    if(setting)localActions.push({kind:'setting',entry:setting,time:setting.time});
-    if(location)localActions.push({kind:'location',entry:location,time:location.time});
-    if(folder)localActions.push({kind:'folder',entry:folder,time:folder.time});
-    await serialUndo(async()=>{
-      if(jobs.size)throw new Error('Wait for the active operation to finish.');
-      undoBusy=true;
-      const ctx=context();
-      let history=runtimeHistory;
-      // A folder toggle needs no runtime round trip once file history is known.
-      if(!history||historyDirty)history=await recoveryCall({action:'list'},ctx);
-      else{
-        const candidate=newestUndoAction(history.records,localActions,history.server_time,history.receivedAt);
-        if(candidate?.kind==='file')history=await recoveryCall({action:'list'},ctx);
-      }
-      runtimeHistory=history;historyDirty=false;
-      assertRuntime(ctx);
-      const latest=newestUndoAction(history.records,localActions,history.server_time,history.receivedAt??Date.now());
-      if(!latest){undoFeedback('Nothing to undo.');return;}
-      if(latest.kind==='setting'){
-        if(settingHistory[settingHistory.length-1]!==latest.entry)throw new Error('Settings changed. Click Undo again.');
-        restoreUndoSettings();undoFeedback('Undone: settings change.');
-      }else if(latest.kind==='location'){
-        if(locationHistory[locationHistory.length-1]!==latest.entry)throw new Error('The sidebar location changed. Click Undo again.');
-        await previousLocation();undoFeedback('Returned to '+currentLocation.path+'.');
-      }else if(latest.kind==='folder'){
-        await restoreFolderAction(latest.entry);
-        undoFeedback((latest.entry.before?'Reopened: ':'Closed: ')+latest.entry.path+'.');
-      }else{
-        const result=await recoveryCall({action:'undo',id:latest.record.id},ctx);
-        if(!result.conflicts.length)runtimeHistory.records=runtimeHistory.records.filter(record=>record.id!==latest.record.id);
-        try{await document.querySelector('colab-file-browser')?.currentTree?.refresh?.();}catch{}
-        if(result.conflicts.length){
-          undoFeedback('Could not fully undo '+latest.record.label+'. Later changes were preserved: '+result.conflicts.map(c=>c.path+' — '+c.reason).join('; '),true);
-        }else undoFeedback('Undone: '+latest.record.label+'.');
-      }
-    });
-  }catch(error){undoFeedback(error.message||'Undo could not finish.',true);}
-  finally{
-    undoBusy=false;undoClickPending=false;
-    updateUndoButton();
-  }
-}
-function element(tag,text){
-  const node=document.createElement(tag);
-  if(text!==undefined)node.textContent=text;
-  return node;
-}
-function installUndoButton(){
-  const refresh=document.querySelector('.file-tree-refresh');
-  if(!refresh||document.querySelector('[data-cfz-undo-button]'))return;
-  const button=document.createElement('md-icon-button');
-  button.dataset.cfzUndoButton='';button.className='cfz-undo-button';
-  button.setAttribute('touch-target','none');button.setAttribute('title','Undo last action');
-  button.setAttribute('data-aria-label','Undo last action');
-  const style=document.createElement('style');style.textContent=`
-    [data-cfz-undo-button][aria-busy="true"] > md-icon{animation:cfz-undo-rotate .9s linear infinite;transform-origin:center}
-    @keyframes cfz-undo-rotate{from{transform:rotate(0deg) scaleX(-1)}to{transform:rotate(-360deg) scaleX(-1)}}
-    @media(prefers-reduced-motion:reduce){[data-cfz-undo-button][aria-busy="true"] > md-icon{animation:none}}
-  `;
-  const icon=document.createElement('md-icon');icon.setAttribute('aria-hidden','true');
-  icon.textContent='refresh';icon.style.transform='scaleX(-1)';button.append(style,icon);
-  button.addEventListener('click',async event=>{if(event.isTrusted&&button.getAttribute('aria-disabled')!=='true')await undoLastAction();});
-  refresh.after(button);updateUndoButton();
-}
-function markUndoHistoryDirty(){historyDirty=true;nextHistoryCheck=0;updateUndoButton();}
-function updateUndoButton(){
-  const button=document.querySelector('[data-cfz-undo-button]');
-  if(!button)return;
-  const hasHistory=Boolean(settingHistory.length||locationHistory.length||folderHistory.length||runtimeHistory?.records.length);
-  const disabled=!hasHistory||undoBusy||undoClickPending||jobs.size>0||historyLoading;
-  // Follow the actual Undo click, not unrelated file work or history checks.
-  // Recreated toolbar buttons also inherit the current animation state.
-  if(undoClickPending)button.setAttribute('aria-busy','true');else button.removeAttribute('aria-busy');
-  button.disabled=Boolean(disabled);
-  if(disabled)button.setAttribute('disabled','');else button.removeAttribute('disabled');
-  button.setAttribute('aria-disabled',String(Boolean(disabled)));
-  button.style.color=undoClickPending?'var(--colab-primary-color,#1a73e8)':disabled?'var(--colab-secondary-text-color,#9aa0a6)':'';
-  button.style.opacity=disabled&&!undoClickPending?'0.38':'1';
-  button.style.cursor=disabled?'default':'pointer';
-  button.title=undoClickPending?'Undoing the last action…':undoBusy||jobs.size?'Undo unavailable while an operation is running':
-    historyLoading?'Checking Undo history':hasHistory?'Undo last action':'Nothing to undo';
-}
-async function refreshUndoAvailability(){
-  if(historyLoading||!historyDirty||undoBusy||jobs.size||Date.now()<nextHistoryCheck)return;
-  let ctx;try{ctx=context();}catch{return;}
-  historyLoading=true;updateUndoButton();
-  try{await serialUndo(async()=>{
-    if(jobs.size||undoBusy)return;
-    const history=await recoveryCall({action:'list'},ctx);
-    assertRuntime(ctx);runtimeHistory=history;historyDirty=false;
-  });}catch{nextHistoryCheck=Date.now()+15000;}
-  finally{historyLoading=false;updateUndoButton();}
-}
-function folderViewPath(view){
-  const file=view?.getFile?.()||view?.file;
-  return file?.isDirectory&&typeof file.path==='string'?'/'+file.path.replace(/^\/+/,''):null;
-}
-function openFolderPaths(view){
-  return [...view.querySelectorAll('colab-file-view')].filter(child=>folderViewPath(child)&&!child.classList.contains('collapsed')).map(folderViewPath);
-}
-function captureFolderAction(event){
-  if(!event.isTrusted||restoringFolder)return;
-  if(event.type==='keydown'&&!['Enter',' ','ArrowLeft','ArrowRight'].includes(event.key))return;
-  const target=event.target;
-  const row=target.closest?.('.file-title-row'),view=row?.closest('colab-file-view');
-  if(!view||row.closest('colab-file-view')!==view||target.closest('button,md-icon-button,input,.menu-button,[data-cfz-status]'))return;
-  const path=folderViewPath(view);if(!path||pendingFolderActions.has(view))return;
-  if(undoBusy||undoClickPending){event.preventDefault();event.stopImmediatePropagation();return;}
-  const before=!view.classList.contains('collapsed'),expanded=openFolderPaths(view),time=Date.now();
-  pendingFolderActions.add(view);
-  // Browser microtasks may run between capture and target listeners. Defer to
-  // the next task so Colab has toggled its class before comparing the state.
-  setTimeout(()=>{
-    pendingFolderActions.delete(view);
-    if(!view.isConnected||restoringFolder)return;
-    const after=!view.classList.contains('collapsed');
-    if(before===after)return;
-    folderHistory.push({path,before,after,expanded,time});
-    if(folderHistory.length>100)folderHistory.shift();
-    updateUndoButton();
-  },0);
-}
-function findFolderView(path){
-  return [...document.querySelectorAll('colab-file-view')].find(view=>folderViewPath(view)===path);
-}
-async function setFolderOpen(view,open){
-  if(!view||typeof view.refresh!=='function')throw new Error('This folder is no longer available in the sidebar.');
-  if(open){view.classList.remove('collapsed');await view.refresh();}
-  else{
-    view.classList.add('collapsed');
-    const children=[...view.children].find(child=>child.classList.contains('child-files'));
-    children?.replaceChildren();view.childViews=[];
-  }
-}
-async function restoreFolderAction(action){
-  if(folderHistory[folderHistory.length-1]!==action)throw new Error('The folder state changed. Click Undo again.');
-  const view=findFolderView(action.path);
-  if(!view)throw new Error('This folder is no longer visible. Its Undo action was retained.');
-  restoringFolder=true;
-  try{
-    await setFolderOpen(view,action.before);
-    if(action.before)for(const path of [...action.expanded].sort((a,b)=>a.split('/').length-b.split('/').length)){
-      const child=findFolderView(path);
-      if(!child)throw new Error('A previously open subfolder is no longer available: '+path);
-      await setFolderOpen(child,true);
-    }
-    folderHistory.pop();
-  }finally{restoringFolder=false;}
-}
+// Preferences persist without tracking settings or sidebar activity.
+const preferencesKey='colab-extras-preferences-v1';
+const preferenceDefaults={overwrite:false};
+let preferences={...preferenceDefaults};
+try{
+  const saved=JSON.parse(localStorage.getItem(preferencesKey)||'{}');
+  for(const key of Object.keys(preferenceDefaults))if(typeof saved?.[key]==='boolean')preferences[key]=saved[key];
+}catch{}
 function preferencesRequest(args){
-  if(args.action==='set')changeUndoPreference(args.key,args.value);
-  else if(args.action!=='get')throw new Error('Unknown settings request.');
-  return {...undoPreferences};
+  if(args.action==='set'){
+    if(jobs.size)throw new Error('Wait for the active operation to finish.');
+    if(!Object.hasOwn(preferenceDefaults,args.key)||typeof args.value!=='boolean')throw new Error('Unknown setting.');
+    const next={...preferences,[args.key]:args.value};
+    localStorage.setItem(preferencesKey,JSON.stringify(next));preferences=next;
+  }else if(args.action!=='get')throw new Error('Unknown settings request.');
+  return {...preferences};
 }
 window.addEventListener('message',event=>{
   if(event.source!==window||event.origin!==location.origin||event.data?.channel!=='colab-extras-preferences')return;
@@ -1086,12 +668,427 @@ window.addEventListener('message',event=>{
   try{window.postMessage({channel:'colab-extras-preferences-result',id,result:preferencesRequest(args)},location.origin);}
   catch(error){window.postMessage({channel:'colab-extras-preferences-result',id,error:error.message},location.origin);}
 });
-const undoObserver=new MutationObserver(()=>{installUndoButton();hookNativeFiles();observeLocation();updateUndoButton();});
-undoObserver.observe(document.body,{childList:true,subtree:true});
-document.addEventListener('click',captureFolderAction,true);
-document.addEventListener('keydown',captureFolderAction,true);
-installUndoButton();hookNativeFiles();observeLocation();void refreshUndoAvailability();
-const undoTimer=setInterval(()=>{hookNativeFiles();observeLocation();updateUndoButton();void refreshUndoAvailability();},1500);
-window.addEventListener('pagehide',()=>{undoObserver.disconnect();clearInterval(undoTimer);document.removeEventListener('click',captureFolderAction,true);document.removeEventListener('keydown',captureFolderAction,true);},{once:true});
+function bridgeDownload(args,timeoutMs=30000){
+  return new Promise((resolve,reject)=>{
+    const id=crypto.randomUUID();
+    const listener=event=>{
+      if(event.source!==window||event.origin!==location.origin||event.data?.channel!=='colab-extras-isolated'||event.data.id!==id)return;
+      window.removeEventListener('message',listener);clearTimeout(timer);
+      event.data.error?reject(new Error(event.data.error)):resolve(event.data.result);
+    };
+    const timer=setTimeout(()=>{window.removeEventListener('message',listener);reject(new Error('Download helper unavailable.'));},timeoutMs);
+    window.addEventListener('message',listener);
+    window.postMessage({channel:'colab-extras-main',id,args},location.origin);
+  });
+}
+async function downloadPermission(){
+  // Probe while the ZIP is being prepared. Optional tracking must never
+  // make the ordinary download depend on a permission or popup setting.
+  try{return (await bridgeDownload({action:'permission'},1000)).granted===true;}
+  catch{return false;}
+}
+async function downloadArchive(job){
+  const tracked=await (job.downloadPermission||downloadPermission());
+  assertRuntime(job.ctx);
+  if(job.cancelled)throw new Error('Cancelled.');
+  setStatus(job,'Downloading…',job.result.archive);
+  if(tracked){
+    // Once a download request is dispatched, do not retry through another
+    // route: an uncertain response could otherwise create duplicate files.
+    await managedDownload(job);
+    return;
+  }
+  const files=document.querySelector('colab-file-browser')?.currentTree?.files;
+  if(!files?.getFile)throw new Error('ZIP saved, but Colab file download is unavailable. Refresh Colab and try again.');
+  const file=await files.getFile(job.result.archive);
+  assertRuntime(job.ctx);
+  if(job.cancelled)throw new Error('Cancelled.');
+  await file.download({
+    get canceled(){return job.cancelled;},
+    update:n=>{
+      const fraction=Number.isFinite(n)?Math.min(1,Math.max(0,n)):null;
+      setStatus(job,fraction!==null?`Downloading ${Math.round(fraction*100)}%`:'Downloading…',job.result.archive,false,fraction);
+    }
+  });
+}
+async function managedDownload(job){
+  const response=await request(job.ctx,'/files/'+encodePath(job.result.archive));
+  const blob=await response.blob();
+  if(job.cancelled)throw new Error('Cancelled.');
+  const url=URL.createObjectURL(blob);
+  try{
+    const result=await bridgeDownload({action:'download',url,name:job.result.archive.split('/').pop(),operation:job.id});
+    job.downloadId=result.id;
+  }finally{
+    // downloads.download resolves when Chrome has accepted the request.
+    setTimeout(()=>URL.revokeObjectURL(url),60000);
+  }
+}
+
+// Selection stays in memory and is scoped to the connected runtime.
+var selectionState={items:new Map(),runtime:null,busy:false,message:'',error:false};
+const selectionPlatform=()=>navigator.userAgentData?.platform||navigator.platform||'';
+const selectionModifier=event=>/Mac|iPhone|iPad|iPod/i.test(selectionPlatform())?event.metaKey&&!event.ctrlKey:event.ctrlKey&&!event.metaKey;
+const selectionStyle=document.createElement('style');
+selectionStyle.textContent='colab-file-view > .file-title-row[data-cfz-selected]{background-color:var(--colab-highlighted-surface-color,rgba(128,128,128,.12))!important}[data-cfz-bulk-hidden]{display:none!important}';
+document.head.append(selectionStyle);
+function selectionMutations(records){
+  if(!selectionState)return;
+  let runtime=null;try{runtime=context().runtime;}catch{}
+  const selector='colab-file-view,colab-file-browser';
+  const changed=(selectionState.runtime&&selectionState.runtime!==runtime)||records.some(record=>
+    record.target.closest?.(selector)||[...record.addedNodes,...record.removedNodes].some(node=>
+      node.matches?.(selector)||node.querySelector?.(selector)));
+  if(changed)refreshSelection();
+  return Boolean(changed);
+}
+function selectionMessage(message,error=false,errorTarget=null){
+  selectionState.message=message;selectionState.error=error;
+  const job=[...jobs.values()].find(item=>item.kind==='bulk-delete');
+  if(error&&(!job||job.ctx.kernel.runtime===job.ctx.runtime)){
+    const target=errorTarget||selectionState.items.values().next().value||job;
+    if(target)setStatus({...target,finished:true},'Delete failed',message,true);
+  }else if(job?.rows)updateBatchStatuses(job);
+  refreshSelection();
+}
+function forgetDeletedSelection(path){
+  for(const selectedPath of selectionState.items.keys()){
+    if(selectedPath===path||selectedPath.startsWith(path+'/'))selectionState.items.delete(selectedPath);
+  }
+}
+function clearSelection(){selectionState.items.clear();refreshSelection();}
+function setSelection(view,mode='only'){
+  if(selectionState.busy||jobs.size)return;
+  try{
+    const ctx=context();
+    if(selectionState.runtime!==ctx.runtime)selectionState.items.clear();
+    selectionState.runtime=ctx.runtime;
+    const file=view.getFile?.()||view.file,path=deletionPath(filePath(view));
+    if(file.name==='..')return;
+    const wasSelected=selectionState.items.has(path);
+    if(mode==='context'&&wasSelected)return;
+    if(mode!=='toggle')selectionState.items.clear();
+    if(mode==='toggle'&&wasSelected)selectionState.items.delete(path);
+    else{
+      // Opening a folder selects its row. Choosing contents must replace
+      // that ancestor selection, or recursive deletion would include every
+      // sibling. Conversely, explicitly choosing a folder replaces children.
+      for(const [selectedPath,item] of selectionState.items){
+        if((item.isDirectory&&path.startsWith(selectedPath+'/'))||
+            (file.isDirectory&&selectedPath.startsWith(path+'/')))selectionState.items.delete(selectedPath);
+      }
+      selectionState.items.set(path,{path,isDirectory:Boolean(file.isDirectory)});
+    }
+    selectionState.message='';selectionState.error=false;refreshSelection();
+  }catch{if(mode!=='toggle')clearSelection();}
+}
+function refreshSelection(){
+  if(!selectionState)return;
+  let runtime=null;try{runtime=context().runtime;}catch{}
+  if(selectionState.runtime&&selectionState.runtime!==runtime){
+    selectionState.items.clear();selectionState.message='';selectionState.runtime=null;
+  }
+  for(const view of document.querySelectorAll('colab-file-view')){
+    const row=[...view.children].find(node=>node.classList.contains('file-title-row'));
+    if(!row)continue;
+    const path=filePath(view),file=view.getFile?.()||view.file;
+    if(selectionState.items.has(path)&&selectionState.items.get(path).isDirectory!==Boolean(file?.isDirectory))selectionState.items.delete(path);
+    row.toggleAttribute('data-cfz-selected',selectionState.items.has(path));
+  }
+}
+function selectionRow(event){
+  const path=event.composedPath();
+  const row=path.find(node=>node?.classList?.contains('file-title-row'));
+  if(!row||path.some(node=>node?.matches?.('input,textarea,select,[contenteditable="true"],button,md-icon-button,.menu-button,.directory-icon,.file-item-action-button')))return null;
+  return row;
+}
+function selectionPointer(event){
+  if(!event.isTrusted||event.button!==0)return;
+  const row=selectionRow(event);if(!row)return;
+  if(selectionModifier(event)){
+    // Capture before Colab's row handlers: selecting must not expand folders,
+    // open files, start a drag, or clear the other selected rows.
+    event.preventDefault();event.stopImmediatePropagation();
+    if(event.type==='click'){
+      setSelection(row.closest('colab-file-view'),'toggle');
+      if(!row.hasAttribute('tabindex'))row.tabIndex=-1;
+      row.focus({preventScroll:true});
+    }
+  }else if(event.type==='click'&&!event.metaKey&&!event.ctrlKey&&!event.shiftKey&&!event.altKey){
+    setSelection(row.closest('colab-file-view'));
+  }
+}
+for(const type of ['pointerdown','mousedown','mouseup','click','dblclick'])document.addEventListener(type,selectionPointer,true);
+document.addEventListener('contextmenu',event=>{
+  if(!event.isTrusted)return;
+  // Preserve a selected group for its menu; other rows use their own menu.
+  const row=event.composedPath().find(node=>node?.classList?.contains('file-title-row'));
+  if(row)setSelection(row.closest('colab-file-view'),'context');
+},true);
+document.addEventListener('click',event=>{
+  if(!event.isTrusted||event.button!==0)return;
+  const path=event.composedPath();
+  // A menu action belongs to the selection; preserve its target snapshot.
+  if(path.some(node=>node?.matches?.('[role="menu"]')))return;
+  const row=path.find(node=>node?.classList?.contains('file-title-row'));
+  if(!row||!selectionState.items.has(filePath(row.closest('colab-file-view')))){
+    clearSelection();addMenuItems(false);
+  }
+},true);
+document.addEventListener('click',event=>{
+  if(!event.isTrusted||!event.composedPath().some(node=>node?.classList?.contains('menu-button')))return;
+  const view=event.composedPath().find(node=>node?.localName==='colab-file-view');
+  if(view)setSelection(view,'context');
+},true);
+document.addEventListener('keydown',event=>{
+  if(!event.isTrusted)return;
+  const row=selectionRow(event);if(!row)return;
+  const deleting=event.key==='Delete'||(event.key==='Backspace'&&/Mac|iPhone|iPad|iPod/i.test(selectionPlatform())&&selectionModifier(event));
+  if(selectionState.busy||jobs.size){
+    if(deleting){event.preventDefault();event.stopImmediatePropagation();}
+    return;
+  }
+  if(event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();clearSelection();}
+  if(deleting){
+    if(!selectionState.items.size)return;
+    event.preventDefault();event.stopImmediatePropagation();void runBulkDelete();
+  }
+},true);
+function hasBulkSelection(path){return selectionState.items.size>1&&selectionState.items.has(path);}
+function syncDeleteMenu(menu,target){
+  const bulk=hasBulkSelection(target.path),handled=bulk||target.isDirectory;
+  const items=[...menu.querySelectorAll('[role="menuitem"]')].filter(item=>!item.dataset.cfzAction);
+  const item=items.find(item=>item.cfzOriginalDelete||/^Delete(?: (?:file|folder))?(?:…|\.\.\.)?$/i.test(item.textContent.trim()));
+  if(!item)return false;
+  const content=item.querySelector('.goog-menuitem-content')||item;
+  if(handled){
+    if(!item.cfzOriginalDelete)item.cfzOriginalDelete={text:content.textContent,disabled:item.getAttribute('aria-disabled'),classDisabled:item.classList.contains('goog-menuitem-disabled'),tabIndex:item.getAttribute('tabindex'),title:item.getAttribute('title')};
+    item.dataset.cfzDelete='';item.toggleAttribute('data-cfz-bulk-delete',bulk);
+    // Single-folder deletion uses the menu's target, even if an earlier
+    // selection was cleared. Groups keep the runtime-scoped selection plan.
+    item.cfzDeleteTarget=bulk?null:{path:target.path,view:target.view};
+    item.tabIndex=0;
+    const label=bulk?`Delete selected items (${selectionState.items.size})`:item.cfzOriginalDelete.text.replace(/(?:…|\.\.\.)$/,'');
+    if(content.textContent!==label)content.textContent=label;
+    let reason='';try{deletionPath(target.path);}catch(error){reason=error.message;}
+    const disabled=Boolean(reason)||selectionState.busy||jobs.size>0;
+    item.title=reason||(disabled?'Wait for the current operation to finish.':'');
+    item.setAttribute('aria-disabled',String(disabled));item.classList.toggle('goog-menuitem-disabled',disabled);
+  }else if(item.cfzOriginalDelete){
+    const original=item.cfzOriginalDelete;
+    content.textContent=original.text;
+    if(original.disabled===null)item.removeAttribute('aria-disabled');else item.setAttribute('aria-disabled',original.disabled);
+    item.classList.toggle('goog-menuitem-disabled',original.classDisabled);
+    if(original.tabIndex===null)item.removeAttribute('tabindex');else item.setAttribute('tabindex',original.tabIndex);
+    if(original.title===null)item.removeAttribute('title');else item.setAttribute('title',original.title);
+    delete item.dataset.cfzDelete;delete item.dataset.cfzBulkDelete;delete item.cfzDeleteTarget;delete item.cfzOriginalDelete;
+  }
+  return handled;
+}
+function syncBulkMenuActions(menu,bulk){
+  menu.toggleAttribute('data-cfz-bulk-menu',bulk);
+  for(const item of menu.querySelectorAll('.goog-menuitem,[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],.goog-menuseparator,[role="separator"]')){
+    const allowed=item.hasAttribute('data-cfz-bulk-delete')||item.dataset.cfzAction==='bulk-delete';
+    if(bulk&&!allowed){
+      if(!item.cfzHiddenAction)item.cfzHiddenAction={ariaHidden:item.getAttribute('aria-hidden'),inert:item.hasAttribute('inert')};
+      item.setAttribute('data-cfz-bulk-hidden','');item.setAttribute('aria-hidden','true');item.inert=true;
+      item.classList.remove('goog-menuitem-highlight');
+    }else if(item.cfzHiddenAction){
+      const original=item.cfzHiddenAction;
+      item.removeAttribute('data-cfz-bulk-hidden');item.inert=original.inert;
+      if(original.ariaHidden===null)item.removeAttribute('aria-hidden');else item.setAttribute('aria-hidden',original.ariaHidden);
+      delete item.cfzHiddenAction;
+    }
+  }
+}
+function bulkMenuEvent(event){
+  if(!event.isTrusted)return;
+  const path=event.composedPath(),menu=path.find(node=>node?.getAttribute?.('role')==='menu');
+  if(!menu)return;
+  const keyboard=event.type==='keydown'||event.type==='keyup';
+  const grouped=menu.hasAttribute('data-cfz-bulk-menu');
+  let item=path.find(node=>node?.hasAttribute?.('data-cfz-delete')||node?.dataset?.cfzAction==='bulk-delete')||
+    (keyboard?menu.querySelector('[data-cfz-delete].goog-menuitem-highlight'):null);
+  if(grouped&&keyboard){
+    if(event.key==='Escape')return;
+    // CSS alone does not change Closure's internal list of actions. Own
+    // keyboard navigation too, so hidden single-item commands cannot run.
+    event.preventDefault();event.stopImmediatePropagation();
+    item=menu.querySelector('[data-cfz-delete],[data-cfz-action="bulk-delete"]');
+    if(event.type==='keyup')return;
+    if(['ArrowDown','ArrowUp','Home','End'].includes(event.key)){item?.focus();return;}
+    if(event.key==='Tab'){menu.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',keyCode:27,bubbles:true}));return;}
+    if(!['Enter',' '].includes(event.key))return;
+  }else if(keyboard&&!['Enter',' '].includes(event.key))return;
+  if(grouped&&!item){event.preventDefault();event.stopImmediatePropagation();return;}
+  if(!item)return;
+  // Closure can activate a native item on mouse-up, before click. Suppress
+  // every activation phase so its original single-item delete never runs.
+  event.preventDefault();event.stopImmediatePropagation();
+  if(event.type!=='click'&&event.type!=='keydown')return;
+  if(item.getAttribute('aria-disabled')==='true'||selectionState.busy||jobs.size)return;
+  const target=item.cfzDeleteTarget;
+  menu.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',keyCode:27,which:27,bubbles:true}));
+  if(target)void runDelete(target);else void runBulkDelete();
+}
+for(const type of ['pointerdown','mousedown','pointerup','mouseup','click','keydown','keyup'])document.addEventListener(type,bulkMenuEvent,true);
+function batchRoot(job,path){
+  return job.plan.find(item=>path===item.path||(item.isDirectory&&path.startsWith(item.path+'/')));
+}
+function updateBatchStatuses(job){
+  // Do not carry a previous runtime's progress into a new runtime's rows.
+  if(job.ctx.kernel.runtime!==job.ctx.runtime){
+    for(const row of job.rows.values()){row.badge?.remove();row.badge=null;}
+    return;
+  }
+  const paths=new Set([...job.targets,...job.plan].map(item=>item.path));
+  for(const view of document.querySelectorAll('colab-file-view')){
+    const path=filePath(view);if(path&&batchRoot(job,path))paths.add(path);
+  }
+  const results=new Map(job.results.map(item=>[item.path,item]));
+  for(const path of paths){
+    const root=batchRoot(job,path);if(!root)continue;
+    let row=job.rows.get(path);
+    if(!row){row={path,id:job.id,batch:job};job.rows.set(path,row);}
+    const result=results.get(root.path);
+    row.finished=Boolean(result)||Boolean(job.finished);
+    if(result){
+      const failed=!result.deleted&&path===root.path;
+      setStatus(row,failed?'Delete failed':'Deleted',failed?result.error+(result.partial?' Some contents may already be deleted.':''):path,failed);
+    }else if(job.finished){
+      const failed=Boolean(job.failure)&&path===root.path;
+      setStatus(row,failed?'Delete failed':'Finished',failed?job.failure:path,failed);
+    }else{
+      setStatus(row,'Deleting…',path);
+    }
+  }
+}
+function finishBatchStatuses(job,error=null){
+  job.finished=true;job.failure=error;updateBatchStatuses(job);
+}
+async function runBulkDelete(explicitTargets=null){
+  if(selectionState.busy||jobs.size)return;
+  const targets=explicitTargets||[...selectionState.items.values()];
+  if(!targets.length)return;
+  let ctx,plan;
+  try{
+    ctx=context();
+    if(!explicitTargets&&ctx.runtime!==selectionState.runtime)throw new Error('The runtime changed. Select the files again.');
+    plan=planDeletion(targets);assertRuntime(ctx);
+  }catch(error){selectionMessage(error.message,true);return;}
+  const id=crypto.randomUUID();
+  const job={kind:'bulk-delete',path:plan[0].path,id,ctx,plan,targets:targets.map(item=>({...item})),rows:new Map(),dir:'/content/.colab-folder-zip-'+id,terminal:null,results:[]};
+  // Snapshot the targets, lock the batch and draw every ring before any
+  // asynchronous runtime work. There is no confirmation or success dialog.
+  selectionState.busy=true;jobs.set(job.path,job);
+  updateBatchStatuses(job);addMenuItems();
+  try{
+    job.terminal=await openTerminal(ctx);
+    await request(ctx,'/api/contents/'+encodePath(job.dir),'PUT',{type:'directory'});job.created=true;
+    await put(ctx,job.dir+'/delete_folder.py',deleteSource);
+    await put(ctx,job.dir+'/args.json',JSON.stringify(plan));
+    assertRuntime(ctx);
+    job.terminal.send(`python3 -B ${quote(job.dir+'/delete_folder.py')} --batch ${quote(job.dir+'/args.json')} ${quote(job.dir)}\n`);job.started=true;
+    let misses=0;
+    while(true){
+      await sleep(500);
+      let response;
+      try{response=await request(ctx,'/files/'+encodePath(job.dir+'/status.json')+'?t='+Date.now());}
+      catch(error){
+        if(error.status===404&&++misses<30)continue;
+        throw error;
+      }
+      const result=await response.json();
+      if(result.state==='error'){job.settled=true;throw new Error(result.error||'Deletion failed.');}
+      validateDeletionStatus(result,plan);
+      if(result.completed<job.results.length)throw new Error('Deletion status moved backwards.');
+      job.results=result.results;
+      for(const item of result.results)if(item.deleted)forgetDeletedSelection(item.path);
+      updateBatchStatuses(job);
+      if(result.state==='complete'){job.settled=true;break;}
+      selectionMessage(`Deleting ${result.completed} of ${plan.length}…`);
+    }
+    finishBatchStatuses(job);
+    const failed=job.results.filter(item=>!item.deleted),deleted=job.results.length-failed.length;
+    selectionMessage(`${deleted} item${deleted===1?'':'s'} deleted.`+(failed.length?` ${failed.length} failed.\n`+failed.map(item=>item.path+': '+item.error+(item.partial?' Some contents may already be deleted.':'')).join('\n'):''),failed.length>0,failed[0]);
+  }catch(error){
+    const deleted=job.results.filter(item=>item.deleted).length;
+    const uncertain=job.started&&!job.settled;
+    const message=(error.message||'Connection lost.')+(uncertain?' The result for remaining items is unknown. Refresh Files before retrying.':'');
+    finishBatchStatuses(job,message);
+    selectionMessage(`${deleted?deleted+' item(s) confirmed deleted. ':''}${message}`,true,plan.find(item=>!job.results.some(result=>result.path===item.path&&result.deleted)));
+  }finally{
+    try{await job.terminal?.close();}catch{}
+    if(job.settled||(job.created&&!job.started))await cleanup(job);
+    if(job.started){try{await document.querySelector('colab-file-browser')?.currentTree?.refresh?.();}catch{selectionMessage('Refresh Files to update the list.',true);}}
+    updateBatchStatuses(job);
+    jobs.delete(job.path);selectionState.busy=false;addMenuItems();refreshSelection();
+  }
+}
+refreshSelection();
+
+// A shortcut based on the current Files location only; no navigation history.
+let contentShortcut=null;
+function contentNavigation(){
+  const tree=document.querySelector('colab-file-browser')?.currentTree;
+  const files=tree?.files,host=tree?.querySelector?.('.parent-link');
+  if(!tree?.isConnected||!host||typeof files?.rootPath!=='string'||typeof tree.refresh!=='function')return null;
+  let ctx;try{ctx=context();}catch{return null;}
+  return {tree,files,host,runtime:ctx.runtime,path:files.rootPath.replace(/^\/+|\/+$/g,'')};
+}
+function sameContentNavigation(shortcut,location){
+  return shortcut&&location&&['tree','files','host','runtime'].every(key=>shortcut[key]===location[key]);
+}
+function syncContentShortcut(){
+  const location=contentNavigation();
+  // Discard callbacks belonging to a replaced tree/runtime or a newer navigation.
+  if(contentShortcut&&(!sameContentNavigation(contentShortcut,location)||
+      (contentShortcut.busy&&location.path!=='content'))){
+    contentShortcut.element.remove();contentShortcut=null;
+  }
+  const inContent=location&&(location.path==='content'||location.path.startsWith('content/'));
+  if(!location||(inContent&&!contentShortcut?.busy)){
+    contentShortcut?.element.remove();contentShortcut=null;return;
+  }
+  if(!contentShortcut){
+    const element=document.createElement('div');element.dataset.cfzContentShortcut='';
+    const style=document.createElement('style');
+    style.textContent='[data-cfz-content-shortcut]{margin:4px 8px;color:var(--colab-primary-text-color,inherit);font:inherit}[data-cfz-content-shortcut] button{display:flex;align-items:center;gap:8px;width:100%;padding:8px 12px;border:0;border-radius:4px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}[data-cfz-content-shortcut] button:hover{background:var(--colab-highlighted-surface-color,rgba(128,128,128,.12))}[data-cfz-content-shortcut] button:focus-visible{outline:2px solid var(--colab-primary-color,#1a73e8);outline-offset:-2px}[data-cfz-content-shortcut] button:disabled{cursor:wait;opacity:.65}[data-cfz-content-error]{margin:2px 12px 6px;font-size:12px;overflow-wrap:anywhere;color:var(--colab-error-color,#b3261e)}';
+    const button=document.createElement('button');button.type='button';button.title='Return to your session folder';
+    const icon=document.createElement('span');icon.textContent='↳';icon.setAttribute('aria-hidden','true');
+    const label=document.createElement('span');label.textContent='Back to /content';button.append(icon,label);
+    const error=document.createElement('div');error.dataset.cfzContentError='';error.hidden=true;error.setAttribute('role','status');
+    element.append(style,button,error);
+    const shortcut={...location,element,button,label,error,busy:false};contentShortcut=shortcut;
+    button.addEventListener('click',event=>{
+      if(!event.isTrusted)return;
+      event.preventDefault();event.stopPropagation();void returnToContent(shortcut);
+    });
+  }
+  // Colab owns the native '..' row. Keep it untouched and place our shortcut above it.
+  if(contentShortcut.element.parentElement!==location.host)location.host.prepend(contentShortcut.element);
+}
+async function returnToContent(shortcut){
+  if(contentShortcut!==shortcut||shortcut.busy||!sameContentNavigation(shortcut,contentNavigation()))return;
+  const previous=shortcut.files.rootPath;
+  shortcut.busy=true;shortcut.button.disabled=true;shortcut.button.setAttribute('aria-busy','true');
+  shortcut.label.textContent='Opening /content…';shortcut.error.hidden=true;shortcut.error.textContent='';
+  clearSelection();selected=null;
+  // Match Colab's native parent-row navigation, including its awaitable refresh.
+  shortcut.files.rootPath='content';
+  try{await shortcut.tree.refresh();}
+  catch(error){
+    if(contentShortcut===shortcut&&sameContentNavigation(shortcut,contentNavigation())&&shortcut.files.rootPath==='content'){
+      shortcut.files.rootPath=previous;
+      shortcut.error.textContent='Could not open /content: '+(error?.message||'Refresh Files and try again.');shortcut.error.hidden=false;
+    }
+  }finally{
+    if(contentShortcut===shortcut){
+      shortcut.busy=false;shortcut.button.disabled=false;shortcut.button.removeAttribute('aria-busy');
+      shortcut.label.textContent='Back to /content';syncContentShortcut();
+    }
+  }
+}
+syncContentShortcut();
 
 })();

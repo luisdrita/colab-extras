@@ -7,18 +7,17 @@ header{display:flex;align-items:center;gap:12px}h1{font-size:21px;margin:0}small
 button{display:block;margin:8px 0;padding:7px 12px;border:1px solid #dadce0;border-radius:8px;background:#fff;color:#1967d2;cursor:pointer}
 #downloads{max-height:260px;overflow:auto}p{overflow-wrap:anywhere}
 </style>
-<header><img src="icons/icon-128.png" width="48" height="48" alt=""><div><h1>Colab Extras</h1><small>Version 0.9.5</small></div></header>
-<p>Use the backwards arrow beside <b>Refresh</b> in Colab’s Files sidebar to <b>undo the last action immediately</b>. No dialog opens.</p>
-<p>Recover ZIP, extraction, deletion, rename, move, copy, folder creation, upload, and replacement actions. Recovery copies use disk space and depend on the runtime and retained recovery data.</p>
-<p>Each click reverses the newest supported file change, folder opening or closing, sidebar location change, or extension setting change. The icon is grey when there is nothing to undo.</p>
+<header><img src="icons/icon-128.png" width="48" height="48" alt=""><div><h1>Colab Extras</h1><small>Version 0.10.14</small></div></header>
+<p>Right-click a file or folder in Colab’s Files sidebar to inspect folders, create ZIPs, extract archives, or delete files and folders. Command-click (Mac) or Ctrl-click (Windows/Linux) to select multiple files and folders. Right-click a selected row and use Delete selected items. Deletion starts immediately; affected rows show loading circles.</p>
+<p><b>ZIP and download is always active.</b> Click it to create the ZIP and start downloading automatically.</p>
+<p>By default, Extract here creates numbered copies when files or folders already exist.</p>
 <h2>Settings for this Colab tab</h2>
-<label><input type="checkbox" data-preference="overwrite" disabled> Allow extraction to replace existing files (originals are retained)</label><br>
-<label><input type="checkbox" data-preference="managedDownloads" disabled> Track downloads for optional cancellation/removal</label>
+<label><input type="checkbox" data-preference="overwrite" disabled> Allow extraction to replace existing files</label>
 <p id="preferences-status" role="status"></p>
 <h2>Local downloads</h2>
-<button id="enable-downloads">Enable optional download management</button>
+<button id="enable-downloads">Enable optional download tracking</button>
 <p id="status" role="status"></p><div id="downloads"></div>
-<p><small>Only downloads initiated through Colab Extras tracking can be managed here. Deleting a local copy is permanent. Refresh Colab after updating.</small></p>
+<p><small>Tracking adds cancellation and local-copy management. ZIP and download also works without it. Deleting a local copy is permanent. Refresh Colab after updating.</small></p>
 <a href="privacy.html" target="_blank" rel="noopener">Privacy policy</a>
 <script src="popup.js"></script>
 </html>

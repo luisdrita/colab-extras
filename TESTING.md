@@ -1,3 +1,150 @@
+# Version 0.10.14 — 10 November 2026
+
+- Added Back to /content in the Files pane's parent-navigation area when browsing outside /content. It returns directly to the session folder and hides inside /content and its descendants. Native parent navigation is preserved. The shortcut follows Colab's theme, supports mouse and keyboard activation, clears stale selection, and disables duplicate clicks while refreshing. Failures appear inline and can be retried; stale callbacks cannot change a replacement runtime/tree or overwrite a newer navigation.
+- Read-only inspection of the connected hosted Colab confirmed the parent-link container, currentTree.files.rootPath and native parent-row refresh behavior. Navigation uses those existing APIs without executing notebook cells, changing the Python working directory, or retaining navigation history. No runtime files were changed.
+- All 61 JavaScript tests and all 35 existing isolated Chrome selection/deletion check groups pass. Seven additional browser check groups cover visibility, parent navigation, mouse/keyboard return, selection clearing, delayed refresh, duplicate activation, failure/retry, tree/runtime replacement, superseding navigation, rerendering and disconnection. No dialogs or page errors occurred. Inspected dark and narrow screenshots; light capture is also available. Windows Ctrl semantics are emulated on macOS, not native Windows.
+- All five Python workers are byte-identical to 0.10.13; the latest backend suite remains the 91 passing tests from 0.10.12. Python tests were not rerun for this navigation-only change. Reproducible build, generated JavaScript syntax, diff whitespace, ZIP integrity and package/install byte comparisons passed. No additional permissions.
+- Updated the existing unpacked installation to 0.10.14. Reload Colab Extras in Chrome's Extensions page and refresh Colab to activate. New shortcut activation in hosted Colab has not been verified; interaction tests use an isolated browser fixture matching the inspected native navigation API. The GitHub release packages the exact verified ZIP (SHA256 `07bc4f73ad4e413c32bade3a330dcc7e704cf5b070c66369a921a5efaa93f30d`). Chrome Web Store upload was not completed: on 10 November the browser tool rejected opening the developer dashboard with “Not allowed.”
+
+---
+
+# Version 0.10.13 — 10 November 2026
+
+- Removed the About this scan disclosure section, its explanatory notes and unused styles from Folder details. Removed the Symbolic links metric row and its rendering assignment. Total file size, exact bytes, Files, Subfolders, Largest files, empty results and incomplete-scan feedback remain.
+- All 61 JavaScript tests pass. Checked the generated dialog in isolated headless Chrome for normal light/dark themes, an empty folder, and an incomplete scan at 390px width. Each view shows only the three requested metrics, both removed labels are absent, Close works, and no page errors occur. Visually inspected dark and narrow screenshots.
+- All five Python workers are byte-identical to 0.10.12, which passed 91 Python tests; Python tests were not rerun for this UI-only change. Symlink handling and actual runtime files are unchanged.
+- Reproducible bundle, generated JavaScript syntax, ZIP integrity, exact packaged-file comparison and installed-file byte verification passed. Updated the existing unpacked installation to 0.10.13 without additional permissions. Reload Colab Extras and refresh Colab to activate. Hosted activation has not been verified. Not committed, pushed or published.
+
+---
+
+# Version 0.10.12 — 10 November 2026
+
+- Removed extension Move/Copy menu entries, destination prompts, JavaScript dispatch/polling code, standalone Python operation entry points, copy verification code and move-only rollback branches. Removed the eight obsolete Move/Copy backend tests and the simulated runtime branch for those operations. Updated the popup, manifest description, README and privacy text.
+- Kept extraction's shared temporary staging, safe rename and rollback helpers; they remain internal to extraction. ZIP creation/download, extraction with numbered collisions, folder details, recursive/bulk deletion and selection behavior retain their existing paths. Native Colab Copy path and downloaded-file management are separate features and remain available.
+- All 91 remaining Python tests and 61 JavaScript tests pass, including extraction cancellation/rollback and download fallback coverage. All 35 isolated headless Chrome check groups pass for selection, exact child-only deletion, ordinary non-empty-folder deletion, progress placement, runtime changes and errors. Windows Ctrl event semantics were emulated on macOS, not verified on native Windows.
+- Verified generated code contains no Move/Copy menu labels, prompts or operation entry points. Reproducible bundle, JavaScript syntax, Python 3.8 grammar, ZIP integrity, exact packaged-file comparison and installed-file byte verification passed. No additional permissions.
+- Updated the existing unpacked installation to 0.10.12. Reload Colab Extras and refresh Colab to activate. Hosted activation has not been verified; browser operations were simulated and backend tests used disposable local fixtures. No user runtime files were changed. Not committed, pushed or published.
+
+---
+
+# Version 0.10.11 — 10 November 2026
+
+- Fixed parent folders remaining selected after opening them and Command/Ctrl-selecting children. A failing regression against 0.10.10 showed the enclosing folder still present alongside two selected child files; the deletion planner correctly but unintentionally collapsed that selection to the whole parent folder.
+- Selecting a child now removes selected ancestors, and explicitly selecting a folder replaces selected descendants. Unrelated selections and similarly named siblings are retained. Deletion and progress are driven by the resulting exact selection, so deleting child items neither deletes the enclosing folder/unselected siblings nor gives them circles. The existing recursive behavior remains when the folder itself is explicitly selected. Circle placement remains on the right.
+- All 61 JavaScript tests, 33 Python deletion tests and 35 isolated headless Chrome check groups pass. New coverage includes two child files, mixed child file/folder selection, ancestor replacement, explicit whole-folder selection, exact worker arguments, only the expected progress rows, refresh/re-expansion, and real disposable local deletions that preserve the enclosing folder and unselected contents. Windows Ctrl event semantics were emulated on macOS, not verified on native Windows.
+- Visually inspected the dark-theme nested-selection screenshot: only first.txt and second.txt have circles; their parent, nested folder and keep.txt do not. All five Python workers are byte-identical to 0.10.10. Reproducible bundle, JavaScript syntax, ZIP integrity, exact packaged-file comparison and installed-file byte verification passed. No additional permissions.
+- Updated the existing unpacked installation to 0.10.11. Reload Colab Extras and refresh Colab to activate. Hosted activation/deletion has not been verified for this version; browser runtime operations were simulated, and deletion tests used disposable local fixtures. Not committed, pushed or published.
+
+---
+
+# Version 0.10.10 — 10 November 2026
+
+- The normal native folder Delete menu entry now dispatches the extension's recursive deletion worker, which handles non-empty folders and their nested/hidden contents. Previously only the separate Delete folder and contents entry or a batch operation used that worker; the ordinary single-folder entry fell through to Colab's empty-folder-only action. A browser regression reproduced that fall-through against 0.10.9 before the fix.
+- Mouse activation phases are intercepted before Closure's native deletion runs. The native entry also supports keyboard activation, and the folder's menu button targets its current folder rather than an earlier selection. Protected roots are disabled. The separate recursive Delete entry remains only as a fallback if the native entry is absent, avoiding duplicate Delete choices. Single-file native actions and group-only menus retain their existing behavior.
+- All 32 Python deletion tests, 60 JavaScript tests and 29 isolated headless Chrome check groups pass. Backend coverage includes deletion of nested/hidden/empty contents, sibling preservation, links, mounted paths and partial failures. Browser coverage includes the normal Delete entry, visible child progress, exact target dispatch, keyboard/menu-button activation, protected folders, fallback, multi-selection, immediate actions without dialogs and right-side circles. Windows Ctrl event semantics were emulated on macOS, not verified on native Windows.
+- All five Python workers are byte-identical to 0.10.9. Reproducible bundle, JavaScript syntax, ZIP integrity, exact packaged-file comparison and installed-file byte verification passed. Updated the existing unpacked installation to 0.10.10 with no additional permissions. Reload Colab Extras and refresh Colab to activate. Hosted activation/deletion has not been verified for this version; browser runtime operations were simulated, and real deletion tests used disposable local fixtures. Not committed, pushed or published.
+
+---
+
+# Version 0.10.9 — 10 November 2026
+
+- Restored loading circles to the right of file/folder names for batch operations by using the shared status-row placement. Removed the batch-only leading placement. All selected items and visible affected descendants still have individual circles, including queued targets, refreshed rows and newly expanded children. Confirmation-free actions and silent success remain unchanged.
+- All 60 JavaScript tests and 23 isolated headless Chrome check groups pass. The existing layout check now verifies that each circle is visually to the right of its name on the same row. Per-target completion, refresh, selection clearing, descendant visibility, partial failures and the other selection behavior remain covered. Windows Ctrl event semantics were emulated on macOS, not verified on native Windows.
+- Visually inspected the dark-theme browser screenshot after row refresh and folder re-expansion. All five Python workers are byte-identical to the 0.10.8 bundle, which passed 98 Python tests; Python tests were not rerun for this presentation-only change. The overlay-filesystem deletion fix is retained.
+- Reproducible bundle, JavaScript syntax, ZIP integrity, exact packaged-file comparison and installed-file byte verification passed. Updated the existing unpacked installation to 0.10.9 with no additional permissions. Reload Colab Extras and refresh Colab to activate. Hosted activation has not been verified. Not committed, pushed or published.
+
+---
+
+# Version 0.10.8 — 10 November 2026
+
+- Confirmed the cause with read-only diagnostics in the user's connected hosted Colab runtime (Python 3.13.18): `/content` reported device 47, both selected ordinary ZIPs reported device 48, and `os.path.ismount()` incorrectly returned true. The root filesystem was `overlay`; neither ZIP appeared in `/proc/self/mountinfo`. No runtime files were changed or deleted. This matches the [Linux overlayfs documentation](https://docs.kernel.org/filesystems/overlayfs.html#overlay-objects): non-directory objects can report a different device from directories on the same overlay mount.
+- Linux deletion now uses the process's [actual mount table](https://man7.org/linux/man-pages/man5/proc_pid_mountinfo.5.html), decoding escaped mount paths and comparing them with the physical pinned parent path. Ordinary overlay files are deletable. Actual file/directory mounts, same-device bind mounts and selected trees containing mounts are refused before deletion. Ordinary contents inside a mounted filesystem remain deletable. Unreadable or malformed Linux mount tables fail without deleting anything. Existing protected-root, symlink, changed-target, recursive deletion and partial-error behavior remains.
+- A disposable two-ZIP regression reproduced the exact reported error before the change by emulating the observed overlay device IDs; it passes after the fix and verifies preservation of the unselected ZIP, folder and sibling file. All 98 Python tests pass, including same-device bind mounts, nested file/directory mounts, mounted ancestors, similar path prefixes, escaped paths, malformed/unreadable mount tables and non-Linux fallback. Mount records and overlay metadata are simulated on the local macOS filesystem; live Linux deletion was not performed.
+- All 60 JavaScript tests and 23 isolated headless Chrome check groups pass with the generated bundle. Immediate batch actions, leading per-row loading circles, selection gestures, group-only menus, partial failures and runtime isolation remain covered. Windows Ctrl event semantics were emulated on macOS, not verified on native Windows.
+- Reproducible bundle, generated JavaScript syntax, Python 3.8 grammar, ZIP integrity, exact packaged-file comparison and installed-file byte verification passed. Updated the existing local unpacked installation with no new permissions. Reload Colab Extras in Chrome's Extensions page and refresh Colab to activate. Hosted activation of 0.10.8 has not been verified. Not committed, pushed or published.
+
+---
+
+# Version 0.10.7 — 10 November 2026
+
+- Removed the batch deletion confirmation dialog. Context-menu and keyboard deletion start immediately after validating and snapshotting the target paths. The extension's single-folder Delete folder and contents command now uses the same worker without a confirmation. Successful completion is silent. Menu labels no longer imply an additional dialog.
+- Every selected row and visible affected descendant receives its own leading loading circle before asynchronous runtime setup begins, including queued targets. Row progress belongs to the immutable job snapshot, so clearing selection, automatic row replacement, folder collapse/re-expansion and newly visible descendants preserve the correct pending indicators. Each completed/failed root stops its affected circles independently; unrelated siblings never receive a circle.
+- Per-row status belongs to the parent batch lock. Completion, partial failure, startup failure, lost connections and runtime changes stop the appropriate rings. Errors remain inline; completed items do not acquire unrelated failure messages. Repeated Delete keys are consumed during the operation to prevent native duplicate deletion.
+- All 60 JavaScript tests and 23 isolated headless Chrome check groups pass. They cover immediate execution without dialogs, leading animated circles on all affected rows, progress before worker startup, per-item completion, deduplication, visible descendants, row replacement, selection clearing, partial/startup/connection failures, single-folder deletion, keyboard activation/repetition, runtime changes and group-only menus. Windows Ctrl event semantics were emulated on macOS, not verified on native Windows. The unchanged Python workers retain their 90 passing tests from 0.10.3 and were not rerun.
+- Visually inspected the simulated dark-theme progress display. Reproducible bundle, JavaScript syntax, ZIP integrity, exact packaged-file matching and installed-file byte verification passed. No additional permissions. Hosted Colab activation was not live-verified; reload the extension and refresh Colab. No real runtime files were deleted during browser testing. Not committed, pushed or published.
+
+---
+
+# Version 0.10.6 — 10 November 2026
+
+- Corrected outside deselection to left-click. Left-clicking blank space in the sidebar, inside an expanded folder or elsewhere on the page clears the selection; ordinary row clicks select one item. Right-clicking blank space preserves the selection, and right-clicking a selected row preserves the group. Menu actions and the deletion confirmation are exempt so their clicks do not erase the batch.
+- Group context menus now expose only implemented batch actions: currently Delete selected items. Both native and extension single-item commands, plus separators, are hidden. Native hidden items are inert and excluded from the accessibility tree. Group keyboard navigation and activation are handled explicitly so Closure's internal list cannot invoke hidden single-item commands. Single-item contexts restore the ordinary commands.
+- All 58 JavaScript tests and 25 isolated headless Chrome check groups pass. Coverage includes mixed/folder/archive groups, only one visible group command, hidden separators, mouse and keyboard activation, single-item action restoration, outside left-click versus right-click, menu/confirmation selection preservation, refresh, running jobs, partial failures, runtime changes and existing gesture behavior. Windows Ctrl event semantics were emulated on a macOS host, not tested on a native Windows OS. The unchanged Python workers retain their 90 passing tests from 0.10.3 and were not rerun.
+- Visually inspected the dark-theme group menu in the simulated runtime. Reproducible build, generated JavaScript syntax, ZIP integrity, exact packaged-file matching and installed-file byte verification passed. No additional controls or permissions. Hosted activation was not live-verified; reload the extension and refresh Colab. Not committed, pushed or published.
+
+---
+
+# Version 0.10.5 — 10 November 2026
+
+- Right-clicking outside the selected file/folder title rows clears the entire selection instead of selecting the new target. Covers other file/folder rows, blank sidebar space, blank space inside an expanded selected folder, and the rest of the page. Right-clicks on a selected row, including its icons/menu button, preserve the group. Open bulk Delete menus update immediately when selection clears, and refresh does not restore cleared highlights.
+- Clearing highlights does not change an already-confirmed deletion plan. Failures still display on the affected rows when the selection was cleared; those items do not reselect themselves. No new controls or permissions.
+- All 58 JavaScript tests and 23 isolated headless Chrome check groups pass. The browser checks cover Mac gestures and Windows Ctrl event semantics emulated on a macOS host, including outside-row clearing, selected-row preservation, menu state, refresh persistence, a running job, and errors after selection clears. The unchanged Python workers retain their 90 passing tests from 0.10.3 and were not rerun.
+- Reproducible bundle, generated JavaScript syntax, ZIP integrity, exact packaged-file comparison and local installed-file byte verification passed. Hosted Colab activation and native Windows OS behavior were not live-verified. Reload the extension and refresh Colab to activate. Not committed, pushed or published.
+
+---
+
+# Version 0.10.4 — 10 November 2026
+
+- Replaced selection checkboxes and the entire selection toolbar with Command-click on Mac and Ctrl-click on Windows/Linux. Modifier clicks toggle a file or folder without opening it; ordinary clicks select one row and retain native Colab behavior. Selected title rows use Colab's existing highlighted-surface colour. Native rename inputs, menu/action buttons and expansion arrows are excluded from the selection gesture.
+- Reuse the existing native Delete menu entry for a selected group, removing the redundant extension folder-delete entry from that group menu. The native entry is restored outside a group. Both mouse-up and click activation are intercepted, along with keyboard activation, so Colab's original single-item delete cannot also run. A fallback context-menu entry is used only if the native Delete entry cannot be identified. Right-click on an unselected row switches to that item. Escape clears focused selection; Delete or Mac Command-Backspace opens the exact-path confirmation.
+- All 58 JavaScript tests pass. The unchanged deletion and archive Python workers retain their 90 passing tests from 0.10.3 and were not rerun.
+- Seventeen isolated headless Chrome check groups pass with the generated bundle under Trusted Types: eight for Mac input, eight for Windows modifier semantics and a no-page-errors check. Coverage includes toggle/highlight, absence of added selection controls, native-menu reuse, mouse-up/click/keyboard interception, cancellation, mixed deletion, plain/right click, protected roots, descendant deduplication, partial failures, busy refresh, unknown results, runtime changes, rename/arrow isolation, shortcuts and dark/narrow layouts. Windows event fields were emulated on a macOS host, which turns physical Ctrl-click into a secondary click; this is not native Windows OS verification.
+- Inspected the current hosted Colab file-row markup, highlight colour and native Delete menu to ground the integration. No hosted runtime files were deleted. Screenshots from the isolated browser harness were visually inspected. Version 0.10.4 activation on hosted Colab has not been verified; the user needs to reload the extension and refresh Colab.
+- Reproducible build, generated JavaScript syntax, ZIP integrity and exact packaged-file comparison verified. Updated and byte-verified the local unpacked installation with no additional permissions. Not committed, pushed or published.
+
+---
+
+# Version 0.10.3 — 10 November 2026
+
+- Added checkboxes for files and folders, Select visible, Clear, and Delete selected in the Files sidebar. Protected roots and job paths cannot be selected. A keyboard-accessible confirmation lists every effective deletion target and makes recursive, permanent deletion explicit; selected parent/child paths are deduplicated.
+- One independent runtime worker processes the confirmed selection. It validates all request paths before deleting, rejects changed file types, selected symlinks, symlink parents, mounted trees and special files, and continues past individual failures. Successful targets clear from the selection; failed targets remain selected with per-path errors and partial-deletion warnings. Unknown results after a connection loss are not automatically retried.
+- Selection survives row replacement, is locked during execution, and is cleared on runtime changes. No persistent selection/history data, no Undo and no additional permissions. Ordinary notebook output changes do not trigger full file-row rescans.
+- All 90 Python tests and 57 JavaScript tests pass. Backend tests operate on disposable local fixtures and cover mixed selection, recursion, overlapping selection, siblings, malformed/protected paths, changed types, symlinks, file replacement, permission/partial failures, mounts, and CLI status errors. JavaScript tests cover cancellation before requests, exact plans and result validation, partial/unknown results, locking and runtime changes. Existing automatic-download and numbered-extraction coverage remains passing.
+- Eight isolated headless Chrome check groups pass using the exact generated bundle under Trusted Types: selection/root protection/row refresh/confirmation cancellation; mixed deletion; parent-child deduplication/Escape/Clear/Select visible; partial failure; busy controls and row replacement; connection loss without duplicate requests; runtime isolation/keyboard/dark narrow layout; absence of page errors. Light and dark confirmation screenshots were visually inspected. This is a simulated Colab runtime, not hosted Colab verification; no real runtime files were deleted during browser testing.
+- Reproducible bundle, JavaScript syntax, Python 3.8 grammar, ZIP integrity and exact packaged-file comparison verified. Local unpacked files updated; reload Colab Extras and refresh Colab to activate. No commit, push or publication.
+
+---
+
+# Version 0.10.2 — 10 November 2026
+
+- Reproduced the reported `Already exists; nothing was overwritten: sample_data/README.md` failure with a disposable archive and pre-existing folder before changing the worker.
+- Default extraction now preserves existing top-level files/folders and creates numbered siblings. An entire existing folder extracts into `sample_data (1)`, then `(2)`, etc.; it is not merged into the original. File copies retain their extension. Names declared elsewhere in the same archive are reserved to prevent unrelated roots from being mixed together.
+- Fresh top-level folders are claimed with exclusive directory creation; concurrent collisions choose another name. Loose-file publication uses exclusive creation and retries a numbered name if a collision appears after preflight. Existing symlinks are not followed. Explicit overwrite mode remains available and unchanged.
+- All 78 Python tests and 48 JavaScript tests pass. Regression cases cover the supplied sample_data scenario, repeated extraction with numbered ZIP names, nested/empty folders, existing numbered destinations, mixed archive roots, loose-file extensions, ZIP/TAR/TAR.GZ/TGZ, symlink collisions, concurrent creation, cancellation cleanup and preservation of original contents. Automatic downloads and Undo removal retain their regression coverage.
+- Reproducible build, generated JavaScript syntax, Python 3.8 grammar, ZIP integrity and exact packaged-file matching passed. Local unpacked files are updated; reload the extension and refresh Colab. Validation used real local disposable filesystem fixtures; hosted Colab activation and extraction were not live-verified for this version. Not pushed or published.
+
+---
+
+# Version 0.10.1 — 10 November 2026
+
+- ZIP and download is always active. Removed the tracking preference toggle and ignore its previously saved value. Optional download permission is checked while the ZIP is prepared; missing permission or an unavailable helper selects Colab's ordinary download automatically. A dispatched download is never retried through another route after an uncertain response.
+- Downloads start immediately after archive creation, before terminal cleanup or sidebar refresh. ZIP only still saves without downloading. Tracked downloads explicitly request `saveAs: false`, as documented by the [Chrome downloads API](https://developer.chrome.com/docs/extensions/reference/api/downloads#type-DownloadOptions).
+- All 48 JavaScript tests pass, covering the previous true/false/missing tracking preference, missing permission, unavailable helper with a one-second timeout, granted permission, cancelled downloads, no duplicate fallback after dispatch, and download-before-cleanup ordering. The unchanged Python workers retain their 72 passing tests from 0.10.0 and were not rerun.
+- Generated JavaScript syntax, reproducible build, ZIP integrity, and packaged-file equality passed. The local unpacked files are updated; Chrome still needs an extension reload and Colab refresh. This version has not been live-tested on hosted Colab, pushed, or published.
+
+---
+
+# Version 0.10.0 — 10 November 2026
+
+- Removed the Undo toolbar control, completed-operation history, native upload/file interception, sidebar/folder/preference tracking, and background history polling. Startup regression coverage verifies the original native file APIs remain untouched and no history timer starts.
+- Retained ZIP and download, archive extraction with optional replacement, folder details, copy/move, popup preferences, optional managed downloads, and quiet progress. Folder deletion uses the existing permanent-deletion worker and an explicit confirmation. Failed/cancelled extraction still rolls back the running operation; successful operations remove temporary originals rather than retain backups for later Undo. Older recovery folders are left untouched.
+- 72 Python tests and 41 JavaScript tests pass. Added coverage includes copy/move success and occupied paths, cross-filesystem publication failure with source restoration, source changes during copying, extraction replacement/cancellation/conflicts, cleanup of temporary originals, and a status-write failure after commit. ZIP cancellation after archive publication retains the saved ZIP.
+- Chrome checks against the generated bundle in the simulated-Colab harness verified there is no Undo control at startup or after ZIP/extraction/copy, ordinary context-menu actions remain, all three operations complete and clear progress, and deletion presents a permanent-delete confirmation. The simulated deletion was not confirmed. A later screenshot attempt failed because browser control timed out; no screenshot is claimed.
+- Final generated JavaScript syntax, Python 3.8 grammar, reproducible build, ZIP integrity, and packaged-file equality are verified during packaging. These tests use disposable local fixtures and a simulated browser; no hosted Colab filesystem operation was run for this version.
+- Local extension files are updated; Chrome needs an extension reload and Colab page refresh. This version has not been pushed, released on GitHub, or submitted to the Chrome Web Store.
+
+---
+
 # Version 0.9.5 — 20 October 2026
 
 - The mirrored Undo arrow rotates counterclockwise throughout a toolbar Undo, including recovery and the final sidebar refresh. Repeated clicks remain disabled. Success and failure both clear the busy state; successful completion stays silent and empty history returns to grey. Reduced-motion preferences disable the animation.

@@ -1,0 +1,15 @@
+Colab Extras 0.10.14 — File selection and session navigation
+
+Changes since 0.9.5:
+
+- Added Back to /content above parent-folder navigation when browsing outside the session folder. One click returns directly; the shortcut hides inside /content and its subfolders.
+- Added Command-click selection on Mac and Ctrl-click selection on Windows/Linux, with subtle row highlighting, outside-left-click clearing and a group menu containing only supported batch actions.
+- Added immediate bulk deletion and recursive deletion of non-empty folders. Selecting children excludes the containing folder and unselected siblings. Deletion is permanent and has no confirmation or Undo.
+- Fixed false mounted-file errors for ordinary files on Colab's overlay filesystem. Actual mounts and protected runtime roots remain protected.
+- Loading circles appear to the right of affected names, survive refresh, and clear individually as targets finish. Successful operations finish quietly.
+- Extraction preserves existing folders/files and creates numbered copies by default. ZIP and download starts automatically once the archive is ready.
+- Removed Undo, completed-operation/navigation history, Move and Copy. Removed About this scan and Symbolic links from Folder details.
+
+Validation: 61 JavaScript tests and 42 isolated Chrome check groups passed. The five Python workers are unchanged from the 0.10.12 build that passed 91 backend tests. Reproducible build, package integrity and installed-file byte comparisons passed. Hosted navigation APIs were inspected read-only; full live activation of this version and native Windows interaction were not verified. No new permissions.
+
+Chrome Web Store submission is pending because the browser tool blocks access to the developer dashboard. This GitHub release does not update the Store listing.

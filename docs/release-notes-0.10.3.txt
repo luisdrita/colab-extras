@@ -1,0 +1,5 @@
+Colab Extras 0.10.3
+
+Select multiple files and folders using checkboxes in the Colab Files sidebar. Use Select visible, Clear, and Delete selected. Confirm the exact file and folder paths before permanent deletion. Folders include all contents; overlapping parent/child selections are deleted once. Successful deletions clear their selections; failed paths remain selected with individual errors. Selection survives file-row refreshes, supports keyboard operation, and is reset when the runtime changes. No Undo or completed-operation history. No additional extension permissions. Automatic ZIP downloads and extraction into numbered copies remain enabled.
+
+Reload the unpacked extension and refresh Colab to activate. Not published.

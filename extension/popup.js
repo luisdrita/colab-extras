@@ -7,10 +7,14 @@ async function message(args){
 async function refresh(){
   const {granted}=await message({action:'permission'});
   document.querySelector('#enable-downloads').hidden=granted;
-  if(!granted)return;
+  if(!granted){
+    list.replaceChildren();
+    status.textContent='ZIP and download is ready. Optional tracking is off.';
+    return;
+  }
   const result=await message({action:'list'});
   list.replaceChildren();
-  status.textContent=result.downloads.length?'These downloads are tracked separately from runtime Undo.':'No managed downloads yet. Enable tracking in the settings above.';
+  status.textContent=result.downloads.length?'Downloads created by Colab Extras.':'Tracking is active. Click ZIP and download in Colab to download a folder.';
   for(const item of result.downloads){
     const row=document.createElement('p'),label=document.createElement('span');
     label.textContent=item.name+' · '+item.state;row.append(label);
@@ -48,7 +52,7 @@ async function preferences(args){
 }
 for(const input of document.querySelectorAll('[data-preference]'))input.addEventListener('change',async()=>{
   input.disabled=true;
-  try{await preferences({action:'set',key:input.dataset.preference,value:input.checked});preferencesStatus.textContent='Setting saved. The sidebar Undo button can reverse this change.';}
+  try{await preferences({action:'set',key:input.dataset.preference,value:input.checked});preferencesStatus.textContent='Setting saved.';}
   catch(error){input.checked=!input.checked;input.disabled=false;preferencesStatus.textContent=error.message;}
 });
 preferences({action:'get'}).catch(()=>{preferencesStatus.textContent='Open or refresh a Colab notebook to change these settings.';});
