@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "name": "Colab Extras",
   "short_name": "Colab Extras",
-  "version": "0.9.5",
-  "description": "Google Colab file tools with Undo: inspect, ZIP, extract, recover deleted files, rename, move, copy, and revisit sidebar paths.",
+  "version": "0.10.14",
+  "description": "Google Colab file tools: inspect folders, ZIP and download, extract archives, and bulk-delete files and folders.",
   "minimum_chrome_version": "120",
   "icons": {
     "16": "icons/icon-16.png",
@@ -11,13 +11,23 @@
     "48": "icons/icon-48.png",
     "128": "icons/icon-128.png"
   },
-  "permissions": ["storage"],
-  "optional_permissions": ["downloads"],
-  "background": {"service_worker": "downloads.js"},
+  "permissions": [
+    "storage"
+  ],
+  "optional_permissions": [
+    "downloads"
+  ],
+  "background": {
+    "service_worker": "downloads.js"
+  },
   "content_scripts": [
     {
-      "matches": ["https://colab.research.google.com/*"],
-      "js": ["download-bridge.js"],
+      "matches": [
+        "https://colab.research.google.com/*"
+      ],
+      "js": [
+        "download-bridge.js"
+      ],
       "run_at": "document_idle"
     },
     {

@@ -1,0 +1,5 @@
+Colab Extras 0.10.7
+
+Batch deletion starts immediately when selected from the context menu or keyboard shortcut. Removed the batch confirmation dialog and routed the extension single-folder delete command through the same immediate worker. Successful completion is silent.
+
+Every selected file/folder and visible affected descendant has a loading circle before its row contents, including queued items. Pending circles survive sidebar refresh, collapse/re-expansion and selection clearing. Each completed or failed target stops its circles independently; failure details remain inline. Connection loss, startup failure and runtime changes do not leave stuck progress rings. No new permissions.

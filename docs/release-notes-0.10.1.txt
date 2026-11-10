@@ -1,0 +1,7 @@
+Colab Extras 0.10.1 — Automatic ZIP downloads
+
+ZIP and download is always active. After creating the ZIP, the extension starts downloading immediately, before sidebar refresh or terminal cleanup. No tracking toggle is required; older saved tracking settings no longer control downloads.
+
+Optional tracking is used automatically when permission is granted. Without permission or an available helper, Colab's ordinary download starts instead. Once a download has been dispatched, an uncertain response does not trigger a second download. ZIP only still saves without downloading. Undo remains removed.
+
+48 JavaScript tests pass. Python workers are unchanged from their 72 passing tests on 0.10.0. Local build only; reload the extension and refresh Colab. Hosted downloads and browser activation have not been live-verified for this version.

@@ -1,4 +1,4 @@
-"""Extract beside an archive; never overwrite or follow links from an archive."""
+"""Extract beside an archive, numbering collisions unless replacement is enabled."""
 import contextlib, hashlib, json, os, pathlib, signal, stat, sys, tarfile, time, zipfile
 
 source = pathlib.Path(sys.argv[1]).absolute()
@@ -7,21 +7,64 @@ started = time.monotonic()
 files = folders = done = 0
 MAX_ENTRIES = 100000
 DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-recovery = None
+from file_operations import Store, Transaction
+file_store = Store()
+transaction = Transaction(file_store, 'Extract: ' + source.name)
 overwrite = '--overwrite' in sys.argv
 overwrite_expected = {}
-if '--undo' in sys.argv:
-    from recovery import Store, Journal
-    recovery_store = Store()
-    recovery_lock = recovery_store.locked()
-    recovery_lock.__enter__()
-    recovery = Journal(recovery_store, 'Extract: ' + source.name)
+created_roots = {}
+
+def numbered_name(name, index, is_dir):
+    if index == 0:
+        return name
+    suffix = '' if is_dir else pathlib.Path(name).suffix
+    stem = name[:-len(suffix)] if suffix else name
+    return stem + ' (' + str(index) + ')' + suffix
+
+def available_name(root_fd, name, is_dir, reserved):
+    index = 0
+    while True:
+        check_cancelled()
+        candidate = numbered_name(name, index, is_dir)
+        index += 1
+        # Do not steal another root name declared by this same archive.
+        if candidate != name and candidate in reserved:
+            continue
+        try:
+            os.stat(candidate, dir_fd=root_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return candidate
+
+def prepare_destinations(root_fd, entries):
+    """Reserve fresh root folders so separate extractions cannot merge trees."""
+    global folders
+    roots = {}
+    for _, parts, is_dir, _ in entries:
+        roots[parts[0]] = roots.get(parts[0], False) or len(parts) > 1 or is_dir
+    reserved = set(roots)
+    names = {}
+    for name, is_dir in roots.items():
+        while True:
+            candidate = available_name(root_fd, name, is_dir, reserved)
+            if not is_dir:
+                break
+            try:
+                os.mkdir(candidate, mode=0o755, dir_fd=root_fd)
+            except FileExistsError:
+                # Another extraction may have taken the candidate meanwhile.
+                continue
+            info = os.stat(candidate, dir_fd=root_fd, follow_symlinks=False)
+            created_roots[candidate] = (info.st_dev, info.st_ino)
+            folders += 1
+            transaction.created(source.parent / candidate, directory=True)
+            break
+        names[name] = candidate
+        reserved.add(candidate)
+    return names, reserved
 
 def report(**data):
     data.update(path=str(source), destination=str(source.parent), files=files,
                 folders=folders, done=done, elapsed=round(time.monotonic() - started, 1))
-    if recovery:
-        data['undo'] = recovery.id
     tmp = job / 'status.tmp'
     tmp.write_text(json.dumps(data), encoding='utf-8')
     os.replace(tmp, job / 'status.json')
@@ -56,11 +99,15 @@ def directory(root_fd, parts, create=False):
                 try:
                     os.mkdir(part, mode=0o755, dir_fd=fd)
                     folders += 1
-                    if recovery:
-                        recovery.created(source.parent.joinpath(*traversed), directory=True)
+                    transaction.created(source.parent.joinpath(*traversed), directory=True)
                 except FileExistsError:
                     pass
             child = os.open(part, DIR_FLAGS, dir_fd=fd)
+            if len(traversed) == 1 and part in created_roots:
+                info = os.fstat(child)
+                if (info.st_dev, info.st_ino) != created_roots[part]:
+                    os.close(child)
+                    raise RuntimeError('The extraction folder changed; it was preserved.')
             os.close(fd)
             fd = child
         yield fd
@@ -74,10 +121,10 @@ def check_destination(root_fd, parts, is_dir):
                 existing = os.stat(parts[-1], dir_fd=parent, follow_symlinks=False)
             except FileNotFoundError:
                 return
-            if overwrite and recovery and not is_dir and stat.S_ISREG(existing.st_mode):
+            if overwrite and not is_dir and stat.S_ISREG(existing.st_mode):
                 if source.parent.joinpath(*parts) == source:
                     raise ValueError('Extraction cannot replace its own archive.')
-                overwrite_expected[parts] = recovery.store.fingerprint(source.parent.joinpath(*parts))
+                overwrite_expected[parts] = transaction.store.fingerprint(source.parent.joinpath(*parts))
                 return
             if not (is_dir and stat.S_ISDIR(existing.st_mode)):
                 raise FileExistsError('Already exists; nothing was overwritten: ' + '/'.join(parts))
@@ -124,30 +171,47 @@ def extract(root_fd, archive_file):
                 total += size
             if index % 500 == 0:
                 report(state='checking', total=total)
-        # Validate the entire archive and all conflicts before creating anything.
+        # Validate every archive path before reserving output folders.
         for _, parts, is_dir, _ in entries:
             check_cancelled()
             if any(types.get(parts[:i]) is False for i in range(1, len(parts))):
                 raise ValueError('Archive uses a file as a directory: ' + '/'.join(parts))
-            check_destination(root_fd, parts, is_dir)
+            if overwrite:
+                check_destination(root_fd, parts, is_dir)
         space = os.fstatvfs(root_fd)
         if total > space.f_bavail * space.f_frsize:
             raise OSError('Not enough free disk space to extract this archive')
+        names, reserved = ({}, set()) if overwrite else prepare_destinations(root_fd, entries)
         report(state='extracting', total=total)
         last = time.monotonic()
         for item, parts, is_dir, size in entries:
             check_cancelled()
+            original_root = parts[0]
+            if not overwrite:
+                parts = (names[original_root],) + parts[1:]
             with directory(root_fd, parts if is_dir else parts[:-1], create=True) as parent:
                 if is_dir:
                     continue
                 destination = source.parent.joinpath(*parts)
                 replaced = None
-                if recovery and overwrite and os.path.lexists(destination):
-                    if parts not in overwrite_expected or recovery.store.fingerprint(destination) != overwrite_expected[parts]:
+                if overwrite and os.path.lexists(destination):
+                    if parts not in overwrite_expected or transaction.store.fingerprint(destination) != overwrite_expected[parts]:
                         raise RuntimeError('Destination changed after extraction preflight; it was preserved.')
-                    replaced = recovery.remove(destination, expected=overwrite_expected[parts])
+                    replaced = transaction.remove(destination, expected=overwrite_expected[parts])
                 # O_EXCL also rejects symlinks and files created after preflight.
-                fd = os.open(parts[-1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=parent)
+                while True:
+                    try:
+                        fd = os.open(parts[-1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=parent)
+                        break
+                    except FileExistsError:
+                        if overwrite or len(parts) != 1:
+                            raise
+                        # A loose-file collision can also appear after preflight.
+                        candidate = available_name(root_fd, original_root, False, reserved)
+                        reserved.add(candidate)
+                        names[original_root] = candidate
+                        parts = (candidate,)
+                        destination = source.parent / candidate
                 identity = os.fstat(fd)
                 digest = hashlib.sha256()
                 copied = 0
@@ -175,19 +239,17 @@ def extract(root_fd, archive_file):
                 except BaseException:
                     now = os.stat(parts[-1], dir_fd=parent, follow_symlinks=False)
                     if (now.st_dev, now.st_ino) == (identity.st_dev, identity.st_ino):
-                        if not recovery or recovery.store.fingerprint(destination).get('hash') == digest.hexdigest():
+                        if transaction.store.fingerprint(destination).get('hash') == digest.hexdigest():
                             os.unlink(parts[-1], dir_fd=parent)
                     raise
                 files += 1
-                if recovery:
-                    after = recovery.store.fingerprint(destination)
-                    if after['identity'][:2] != [identity.st_dev, identity.st_ino] or after.get('hash') != digest.hexdigest():
-                        raise RuntimeError('An extracted file changed during extraction; it was preserved.')
-                    if replaced:
-                        replaced['after'] = after
-                        recovery.save()
-                    else:
-                        recovery.created(destination, expected=after)
+                after = transaction.store.fingerprint(destination)
+                if after['identity'][:2] != [identity.st_dev, identity.st_ino] or after.get('hash') != digest.hexdigest():
+                    raise RuntimeError('An extracted file changed during extraction; it was preserved.')
+                if replaced:
+                    replaced['after'] = after
+                else:
+                    transaction.created(destination, expected=after)
         return total
 
 for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
@@ -214,18 +276,18 @@ try:
         after = os.fstat(fd)
         if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
             raise RuntimeError('Archive changed during extraction; check the extracted files')
-    if recovery:
-        recovery.finish()
+    transaction.finish()
     report(state='extracted', total=total)
 except BaseException as exc:
-    rollback = recovery_store.undo(recovery.id) if recovery else None
+    # Once committed, temporary originals have been discarded. A subsequent
+    # status-write failure must not remove the completed output.
+    completed = transaction.data['state'] == 'complete'
+    rollback = {'conflicts': []} if completed else file_store.rollback(transaction)
     report(state='cancelled' if isinstance(exc, InterruptedError) else 'error',
-           error=str(exc), partial=bool(rollback['conflicts']) if rollback else bool(files or folders),
-           recovery=rollback)
+           error=str(exc), partial=completed or bool(rollback['conflicts']),
+           temporary_originals=[str(p) for p in transaction.buckets] if rollback['conflicts'] else [])
 finally:
     try:
         (job / 'pid').unlink()
     except OSError:
         pass
-    if recovery:
-        recovery_lock.__exit__(None, None, None)

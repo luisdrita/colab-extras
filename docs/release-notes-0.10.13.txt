@@ -1,0 +1,3 @@
+Colab Extras 0.10.13
+
+Removed About this scan and the Symbolic links metric from Folder details. The dialog keeps total file size, file/subfolder counts, largest files and scan error feedback. The scanner and filesystem behavior are unchanged. No new permissions.

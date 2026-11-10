@@ -15,12 +15,12 @@ function showDetailsDialog(job){
     dialog[open]{display:flex;flex-direction:column}dialog::backdrop{background:#0006}
     header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 16px 16px 24px;border-bottom:1px solid var(--divider);flex-shrink:0}
     h2{font:400 20px/28px var(--colab-google-sans-font-family,'Google Sans',Roboto,Arial,sans-serif);margin:0}h3{font-size:14px;font-weight:500;margin:24px 0 8px}
-    button{font-family:inherit;font-size:14px;font-weight:500;line-height:20px;border:0;border-radius:4px;background:transparent;color:var(--accent);min-height:36px;padding:8px 16px;cursor:pointer}button:hover,summary:hover{background:var(--hover)}button:focus-visible,summary:focus-visible{outline:2px solid var(--colab-focus-ring-color,var(--accent));outline-offset:2px}
+    button{font-family:inherit;font-size:14px;font-weight:500;line-height:20px;border:0;border-radius:4px;background:transparent;color:var(--accent);min-height:36px;padding:8px 16px;cursor:pointer}button:hover{background:var(--hover)}button:focus-visible{outline:2px solid var(--colab-focus-ring-color,var(--accent));outline-offset:2px}
     header button{display:grid;place-items:center;min-height:32px;width:32px;padding:0;font:24px/1 Arial,sans-serif;color:var(--secondary);border-radius:50%}
     .content{padding:20px 24px;overflow:auto;min-height:0}p{margin:0}.path{font:13px/20px var(--colab-code-font-family,monospace);overflow-wrap:anywhere;color:var(--secondary)}.status-row{display:flex;align-items:center;gap:8px;margin-top:8px}.status{font-size:12px;color:var(--secondary)}#scan-progress{display:inline-flex}.muted{font-size:12px;color:var(--secondary)}.error{color:var(--colab-error-color,#b3261e)}.warning{margin-top:16px;padding:12px;border-radius:4px;background:var(--colab-warning-container-color,#fff2cc);color:var(--colab-on-warning-container-color,#5f4100);font-size:12px;overflow-wrap:anywhere}
     dl{margin:20px 0 0;padding-bottom:16px;border-bottom:1px solid var(--divider)}dl>div{display:grid;grid-template-columns:160px minmax(0,1fr);gap:16px;padding:6px 0}dt{color:var(--secondary)}dd{margin:0;font-variant-numeric:tabular-nums}#size{font-weight:500}#exact{display:block;font-size:12px;font-weight:400;color:var(--secondary);overflow-wrap:anywhere}
     table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:13px}th{text-align:left;color:var(--secondary);font-size:12px;font-weight:400}td,th{padding:8px 0;border-bottom:1px solid var(--divider)}td:first-child{overflow-wrap:anywhere;padding-right:16px}td:last-child,th:last-child{width:96px;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}tbody tr:last-child td{border-bottom:0}
-    details{margin-top:16px;font-size:12px;color:var(--secondary)}summary{width:fit-content;padding:4px 0;cursor:pointer;border-radius:2px}#notes{margin-top:8px}footer{display:flex;justify-content:flex-end;padding:8px 16px;border-top:1px solid var(--divider);flex-shrink:0}[hidden]{display:none!important}
+    footer{display:flex;justify-content:flex-end;padding:8px 16px;border-top:1px solid var(--divider);flex-shrink:0}[hidden]{display:none!important}
     @media(max-width:420px){header{padding-left:20px}.content{padding:16px 20px}dl>div{grid-template-columns:125px minmax(0,1fr);gap:12px}}
   `;
   const metric=(label,id)=>node('div',{},node('dt',{},label),node('dd',{id}));
@@ -29,10 +29,9 @@ function showDetailsDialog(job){
     node('header',{},node('h2',{id:'title'},'Folder details'),node('button',{id:'close','aria-label':'Close folder details'},'×')),
     node('div',{class:'content'},node('p',{class:'path',id:'folder-path'}),node('div',{class:'status-row'},node('span',{id:'scan-progress'}),node('p',{class:'status',id:'status',role:'status','aria-live':'polite',hidden:''},'Scanning folder…')),
     node('div',{id:'result',hidden:''},node('div',{id:'warning',class:'warning',hidden:''}),
-      node('dl',{},sizeMetric,metric('Files','files'),metric('Subfolders','folders'),metric('Symbolic links','links')),
+      node('dl',{},sizeMetric,metric('Files','files'),metric('Subfolders','folders')),
       node('h3',{},'Largest files'),node('p',{id:'empty',class:'muted',hidden:''},'No regular files found.'),
-      node('table',{id:'largest'},node('thead',{},node('tr',{},node('th',{scope:'col'},'File · relative path'),node('th',{scope:'col'},'Size'))),node('tbody')),
-      node('details',{},node('summary',{},'About this scan'),node('p',{id:'notes'})))),node('footer',{},node('button',{id:'done'},'Cancel scan')));
+      node('table',{id:'largest'},node('thead',{},node('tr',{},node('th',{scope:'col'},'File · relative path'),node('th',{scope:'col'},'Size'))),node('tbody')))),node('footer',{},node('button',{id:'done'},'Cancel scan')));
   shadow.append(style,dialog);
   const get=id=>shadow.getElementById(id);
   const progress=createProgress('Scanning folder…');get('scan-progress').append(progress.element);
@@ -60,7 +59,7 @@ function showDetailsDialog(job){
     get('status').hidden=true;get('status').textContent='';
     get('result').hidden=false;get('done').textContent='Close';
     get('size').textContent=formatBytes(result.bytes);get('exact').textContent=result.bytes.toLocaleString()+' bytes';
-    for(const key of ['files','folders','links'])get(key).textContent=result[key].toLocaleString();
+    for(const key of ['files','folders'])get(key).textContent=result[key].toLocaleString();
     if(result.skipped){
       get('warning').hidden=false;
       get('warning').textContent=`Incomplete totals: ${result.skipped.toLocaleString()} item${result.skipped===1?'':'s'} could not be fully scanned. `+result.errors.map(item=>item.path+': '+item.error).join(' · ');
@@ -71,9 +70,6 @@ function showDetailsDialog(job){
       name.textContent=file.path;size.textContent=formatBytes(file.size);size.title=file.size.toLocaleString()+' bytes';row.append(name,size);body.append(row);
     }
     get('empty').hidden=result.largest.length!==0;get('largest').hidden=result.largest.length===0;
-    get('notes').textContent='Hidden files included. Size is logical file bytes, not disk space; symbolic-link targets are not followed. Each file path is counted, including hard links. The selected folder itself is not counted as a subfolder. Live scan, not a snapshot.'+
-      (result.excluded?` ${result.excluded} temporary extension folder${result.excluded===1?'':'s'} excluded.`:'')+
-      (result.special?` ${result.special} special files excluded from file count and size.`:'');
   }};
   get('close').addEventListener('click',()=>view.close());get('done').addEventListener('click',()=>view.close());
   dialog.addEventListener('cancel',event=>{event.preventDefault();view.close();});

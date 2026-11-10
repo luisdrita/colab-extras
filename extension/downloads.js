@@ -12,7 +12,7 @@ chrome.runtime.onMessage.addListener((args,sender,reply)=>{
       if(typeof args.url!=='string'||!args.url.startsWith('blob:https://colab.research.google.com/')||
         typeof args.name!=='string'||/[\\/]/.test(args.name)||!args.name.endsWith('.zip')||
         typeof args.operation!=='string'||!/^[a-f0-9-]{36}$/.test(args.operation))throw new Error('Invalid managed download.');
-      const id=await chrome.downloads.download({url:args.url,filename:args.name,conflictAction:'uniquify'});
+      const id=await chrome.downloads.download({url:args.url,filename:args.name,conflictAction:'uniquify',saveAs:false});
       records.push({id,operation:args.operation,name:args.name,time:Date.now()});
       await chrome.storage.local.set({downloads:records});
       return {id};

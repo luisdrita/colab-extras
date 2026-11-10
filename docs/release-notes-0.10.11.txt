@@ -1,0 +1,5 @@
+Colab Extras 0.10.11
+
+Selecting items inside a folder now removes any selected ancestor folders from the selection. This prevents an opening click on the parent from accidentally turning child deletion into deletion of the entire folder. Only selected targets and the contents of explicitly selected folders are affected; the enclosing folder and unselected siblings remain untouched and show no loading circles.
+
+Explicitly selecting a parent folder replaces its selected children, preserving whole-folder recursive deletion when intended. Right-side loading circles, Command/Ctrl selection and immediate execution without confirmation remain unchanged. No new permissions.

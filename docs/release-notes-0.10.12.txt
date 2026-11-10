@@ -1,0 +1,3 @@
+Colab Extras 0.10.12
+
+Removed the extension’s Move and Copy actions, destination prompts, dispatch handlers and standalone runtime operation code. Updated the popup, description and documentation. ZIP/download, archive extraction, folder details, selection and deletion remain available. Extraction retains the temporary staging and rollback helpers it needs. No new permissions.

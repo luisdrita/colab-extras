@@ -1,0 +1,5 @@
+Colab Extras 0.10.4
+
+Multi-selection now uses Command-click on Mac and Ctrl-click on Windows/Linux. Clicking again with the modifier removes a row from the selection. Normal clicking selects one row and retains Colab opening/expanding behavior. Selected rows use the existing subtle theme highlight. Removed selection checkboxes and all selection toolbar controls.
+
+Right-click a selected row to bulk-delete through the existing Delete entry. Right-clicking an unselected row switches to that item. The confirmation still lists every effective deletion target; overlapping parent/child selections are processed once, and failures remain highlighted. Escape clears the focused selection. Delete (or Command-Backspace on Mac) opens the same confirmation. No new extension permissions, Undo or persistent history.

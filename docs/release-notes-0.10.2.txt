@@ -1,0 +1,7 @@
+Colab Extras 0.10.2 — Extract existing folders into numbered copies
+
+Extract here no longer fails just because the extracted folder already exists. By default it creates a numbered sibling, for example sample_data (1), preserving the existing folder and the original ZIP. Repeated extraction uses the next available number. Nested files and empty directories stay together in the duplicated tree. Loose-file collisions create numbered copies while retaining file extensions.
+
+Includes concurrent-collision handling and cancellation cleanup. Explicit overwrite mode remains available. Automatic ZIP downloads and the removal of Undo are preserved.
+
+Validation: 78 Python and 48 JavaScript tests passed, including reproduction of the reported sample_data/README.md case. Local build only; reload Colab Extras and refresh Colab. Hosted extraction was not live-verified for this version.

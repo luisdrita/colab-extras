@@ -1,7 +1,7 @@
-// File mutations retain runtime-local recovery data.
+// File tools operate only when requested from the sidebar.
 if (document.querySelector('meta[name="colab-folder-zip-version"]')) return;
 const marker=document.createElement('meta');
-marker.name='colab-folder-zip-version';marker.content='0.9.5';document.head.append(marker);
+marker.name='colab-folder-zip-version';marker.content='0.10.14';document.head.append(marker);
 const jobs=new Map();
 let selected=null;
 function context(){
@@ -22,6 +22,7 @@ function folderPath(view){
 function setStatus(job,label,detail=label,error=false,progress=null){
   job.status={label,detail,error,progress};
   // Keep feedback with its folder, including after Colab refreshes the file tree.
+  if(job.view?.isConnected&&filePath(job.view)!==job.path){job.badge?.remove();job.badge=null;job.view=null;}
   const view=job.view?.isConnected ? job.view : [...document.querySelectorAll('colab-file-view')].find(v=>filePath(v)===job.path);
   if(!view)return;
   job.view=view;
@@ -47,7 +48,8 @@ function setStatus(job,label,detail=label,error=false,progress=null){
   if(text.textContent!==value)text.textContent=value;
   badge.title=detail;
   badge.style.color=error?'var(--colab-error-color,#b3261e)':'var(--colab-secondary-text-color,inherit)';
-  const busy=!error&&!job.finished&&jobs.get(job.path)===job;
+  const owner=job.batch||job;
+  const busy=!error&&!job.finished&&!owner.finished&&jobs.get(owner.path)===owner;
   // Ordinary actions show only the ring and leave no completion badge.
   // Error details remain visible so failures cannot look like success.
   text.hidden=!error;
@@ -66,7 +68,7 @@ function finishStatus(job,label,detail,error=false){
 async function cleanup(job){
   if(!job.created)return;
   // Only job staging files are removed. The saved sibling ZIP is retained.
-  const names=['archive.py','extract_archive.py','delete_folder.py','folder_details.py','recovery.py','status.json','status.tmp','pid','cancel','archive.partial'];
+  const names=['archive.py','extract_archive.py','delete_folder.py','folder_details.py','file_operations.py','args.json','status.json','status.tmp','pid','cancel','archive.partial'];
   if(job.kind==='zip')names.push(job.path.split('/').pop()+'.zip');
   for(const name of names){
     try{await request(job.ctx,'/api/contents/'+encodePath(job.dir+'/'+name),'DELETE');}
@@ -77,9 +79,10 @@ async function cleanup(job){
 async function run(target,download){
   let path;
   try{path=deletionPath(target.path);}catch(error){setStatus(target,'ZIP failed',error.message,true);return;}
-  if(jobs.size||undoBusy)return;
+  if(jobs.size)return;
   const id=crypto.randomUUID();
   const job={kind:'zip',path,view:target.view,id,dir:'/content/.colab-folder-zip-'+id,cancelled:false,terminal:null};
+  if(download)job.downloadPermission=downloadPermission();
   jobs.set(path,job);setStatus(job,'Zipping…');addMenuItems();
   try{
     job.ctx=context();const ctx=job.ctx;
@@ -89,9 +92,8 @@ async function run(target,download){
     job.terminal=await openTerminal(ctx);
     await request(ctx,'/api/contents/'+encodePath(job.dir),'PUT',{type:'directory'});job.created=true;
     await put(ctx,job.dir+'/archive.py',archiveSource);
-    await put(ctx,job.dir+'/recovery.py',recoverySource);
     if(job.cancelled)throw new Error('Cancelled.');
-    job.terminal.send(`python3 -B ${quote(job.dir+'/archive.py')} ${quote(path)} ${quote(job.dir)} --undo\n`);
+    job.terminal.send(`python3 -B ${quote(job.dir+'/archive.py')} ${quote(path)} ${quote(job.dir)}\n`);
     job.started=true;
     let misses=0,cancelSent=false;
     while(true){
@@ -113,51 +115,26 @@ async function run(target,download){
       const fraction=Number.isFinite(result.done)&&Number.isFinite(result.total)&&result.total>0?Math.min(1,Math.max(0,result.done/result.total)):null;
       setStatus(job,fraction!==null?`${label} ${Math.round(fraction*100)}%`:`${label}…`,undefined,false,fraction);
     }
-    await job.terminal.close();job.terminal=null;
-    const tree=document.querySelector('colab-file-browser')?.currentTree;
-    // Make the newly saved sibling archive appear in the Files sidebar.
-    try{await tree?.refresh?.();}catch{}
     if(job.cancelled)throw new Error('Cancelled.');
     if(download){
-      if(undoPreferences.managedDownloads){
-        setStatus(job,'Starting tracked download…',job.result.archive);
-        await managedDownload(job);
-      }else{
-        const files=document.querySelector('colab-file-browser')?.currentTree?.files;
-        if(!files?.getFile)throw new Error('ZIP saved, but Colab file download is unavailable.');
-        setStatus(job,'Downloading…',job.result.archive);
-        const file=await files.getFile(job.result.archive);
-        assertRuntime(ctx);
-        if(job.cancelled)throw new Error('Cancelled.');
-        await file.download({
-          get canceled(){return job.cancelled;},
-          update:n=>{
-            const fraction=Number.isFinite(n)?Math.min(1,Math.max(0,n)):null;
-            setStatus(job,fraction!==null?`Downloading ${Math.round(fraction*100)}%`:'Downloading…',job.result.archive,false,fraction);
-          }
-        });
-      }
+      await downloadArchive(job);
       if(job.cancelled)throw new Error('Cancelled.');
     }
+    await job.terminal.close();job.terminal=null;
+    const tree=document.querySelector('colab-file-browser')?.currentTree;
+    // Sidebar refresh must not delay starting the requested download.
+    try{await tree?.refresh?.();}catch{}
     finishStatus(job,download?'Download started':'ZIP ready','Saved '+job.result.archive);
   }catch(error){
-    let rollbackDetail='';
-    if(job.cancelled&&job.result?.undo){
-      try{
-        const recovered=await recoveryCall({action:'undo',id:job.result.undo},job.ctx);
-        if(recovered.conflicts.length)rollbackDetail=' Later changes were preserved; resolve the conflict and click Undo again.';
-        else job.result=null;
-      }catch(rollbackError){rollbackDetail=' Recovery could not finish: '+rollbackError.message;}
-    }
-    const suffix=job.result?' ZIP remains at '+job.result.archive+'. Use Undo to remove it.':'';
+    const suffix=job.result?' ZIP remains at '+job.result.archive+'.':'';
     const label=job.cancelled?'ZIP cancelled':job.result&&download?'Download failed':'ZIP failed';
-    finishStatus(job,label,(error.message||'The connection to Colab was lost.')+suffix+rollbackDetail,!job.cancelled||Boolean(rollbackDetail));
+    finishStatus(job,label,(error.message||'The connection to Colab was lost.')+suffix,!job.cancelled);
   }finally{
     await job.terminal?.close();
     // Completed jobs are safe to clean. A lost connection can leave a
     // process alive, so retain incomplete staging files for diagnosis.
     if(job.result||job.settled||(job.created&&!job.started))await cleanup(job);
-    jobs.delete(path);markUndoHistoryDirty();addMenuItems();
+    jobs.delete(path);addMenuItems();
   }
 }
 function cancelJob(path){
@@ -166,6 +143,9 @@ function cancelJob(path){
   // accept a stale Cancel click or replace its final status.
   if(!job||job.finished)return;
   job.cancelled=true;setStatus(job,'Cancelling…');
+}
+async function runDelete(target){
+  await runBulkDelete([{path:target.path,isDirectory:true}]);
 }
 function capture(event){
   if(!event.isTrusted)return;
@@ -180,7 +160,8 @@ document.addEventListener('contextmenu',capture,true);
 document.addEventListener('click',event=>{
   if(event.composedPath().some(node=>node?.classList?.contains('menu-button')))capture(event);
 },true);
-function addMenuItems(){
+function addMenuItems(updateSelection=true){
+  if(updateSelection)refreshSelection();
   if(!selected)return;
   const menus=[...document.querySelectorAll('[role="menu"][aria-label]')].filter(menu=>
     menu.getBoundingClientRect().width>0 && (menu.getAttribute('aria-label')||'').endsWith(': '+selected.name));
@@ -190,15 +171,17 @@ function addMenuItems(){
       // Keep Closure's menu open when keyboard focus enters an added action.
       menu.addEventListener('blur',event=>{
         const next=event.relatedTarget;
-        if(next?.closest?.('[data-cfz-action]')?.parentElement===menu)event.stopImmediatePropagation();
+        if(next?.closest?.('[data-cfz-action],[data-cfz-delete]')?.parentElement===menu)event.stopImmediatePropagation();
       },true);
     }
+    const bulk=hasBulkSelection(selected.path),nativeDelete=syncDeleteMenu(menu,selected);
     const currentJob=jobs.get(selected.path);
     const running=currentJob?.finished?null:currentJob?.kind;
-    const actions=selected.isDirectory
-      ? [['details','Folder details'],['zip','ZIP only'],['download','ZIP and download'],...(running==='zip'?[['cancel','Cancel ZIP']]:[]),['delete','Delete folder and contents…']]
+    const actions=bulk
+      ? (nativeDelete?[]:[['bulk-delete',`Delete selected items (${selectionState.items.size})`]])
+      : selected.isDirectory
+      ? [['details','Folder details'],['zip','ZIP only'],['download','ZIP and download'],...(running==='zip'?[['cancel','Cancel ZIP']]:[]),...(nativeDelete?[]:[['delete','Delete folder and contents']])]
       : [...(isExtractable(selected.path)?[['extract','Extract here']]:[]),...(running==='extract'?[['cancel','Cancel extraction']]:[])];
-    actions.push(['move','Move…'],['copy','Copy…']);
     for(const old of menu.querySelectorAll('[data-cfz-action]'))if(!actions.some(([action])=>action===old.dataset.cfzAction))old.remove();
     for(const [action,label] of actions){
       let button=menu.querySelector(`[data-cfz-action="${action}"]`);
@@ -231,8 +214,8 @@ function addMenuItems(){
           if(action==='cancel'){
             cancelJob(target.path);
           }else if(action==='details')void runDetails(target);
-          else if(action==='delete')void runRecoverableDelete(target);
-          else if(['rename','move','copy','newfolder'].includes(action))void runFileAction(target,action);
+          else if(action==='delete')void runDelete(target);
+          else if(action==='bulk-delete')void runBulkDelete();
           else if(action==='extract')void runExtract(target);
           else void run(target,action==='download');
         };
@@ -245,19 +228,25 @@ function addMenuItems(){
       let reason='';
       if(action==='delete'){try{deletionPath(selected.path);}catch(error){reason=error.message;}}
       if(action==='extract'){try{extractionPath(selected.path);}catch(error){reason=error.message;}}
-      const disabled=action!=='cancel' && (Boolean(reason)||jobs.size>0||undoBusy);
+      const disabled=action!=='cancel' && (Boolean(reason)||jobs.size>0);
       button.title=reason || (disabled?'Wait for the current operation in this location to finish.':action==='extract'?'Extract beside this archive. Replacement follows your extraction settings.':'');
       if(action==='delete')button.style.color=disabled?'':'#d93025';
       button.setAttribute('aria-disabled',String(disabled));button.classList.toggle('goog-menuitem-disabled',disabled);
     }
+    syncBulkMenuActions(menu,bulk);
   }
 }
-const observer=new MutationObserver(()=>{
-  addMenuItems();
+const observer=new MutationObserver(records=>{
+  addMenuItems(false);
+  const filesChanged=selectionMutations(records);
+  syncContentShortcut();
   // Colab replaces rows during refresh. Restore an active ring even while
   // waiting for a backend request that is not producing progress callbacks.
-  for(const job of jobs.values())if(!job.finished&&job.status&&!job.badge?.isConnected){
-    const {label,detail,error,progress}=job.status;setStatus(job,label,detail,error,progress);
+  for(const job of jobs.values()){
+    if(job.rows){if(filesChanged)updateBatchStatuses(job);}
+    else if(!job.finished&&job.status&&!job.badge?.isConnected){
+      const {label,detail,error,progress}=job.status;setStatus(job,label,detail,error,progress);
+    }
   }
 });
 observer.observe(document.body,{childList:true,subtree:true});

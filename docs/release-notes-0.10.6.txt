@@ -1,0 +1,5 @@
+Colab Extras 0.10.6
+
+Left-clicking blank space outside selected file/folder rows clears the selection. Right-clicking blank space keeps it; right-clicking a selected row keeps the group, and another row uses its own context. Selection menus and the deletion confirmation preserve the group when clicked.
+
+Group context menus now show only supported batch actions: currently Delete selected items. Single-item native and extension commands and separators are hidden and excluded from keyboard navigation. Single-item menus retain their normal actions. Command/Ctrl selection, subtle highlights, and confirmed bulk deletion remain available without extra sidebar controls.

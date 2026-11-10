@@ -97,7 +97,7 @@ class DeleteTests(unittest.TestCase):
         self.assertTrue((self.source / 'nested/data.txt').exists())
 
     def test_nested_mount_rejected_before_any_deletion(self):
-        with patch.object(delete.os.path, 'ismount', side_effect=lambda p: str(p).endswith('/nested')):
+        with patch.object(delete, 'runtime_mounts', return_value={self.source.resolve() / 'nested'}):
             with self.assertRaises(ValueError):
                 self.remove()
         self.assertTrue((self.source / 'nested/data.txt').exists())

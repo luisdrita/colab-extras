@@ -12,18 +12,18 @@ function normalizePath(value) {
 function deletionPath(value) {
   const path = normalizePath(value);
   if (!path.startsWith('/content/') || path.split('/').some(p => p.startsWith('.colab-folder-zip-'))) {
-    throw new Error('Choose a folder inside /content. Runtime roots and job folders cannot be deleted.');
+    throw new Error('Choose a file or folder inside /content. Runtime roots and job folders cannot be deleted.');
   }
   if (['/content/drive', '/content/drive/MyDrive', '/content/drive/Shareddrives'].includes(path) ||
       /^\/content\/drive\/Shareddrives\/[^/]+$/.test(path)) {
-    throw new Error('Drive roots cannot be deleted. Choose a folder inside the drive.');
+    throw new Error('Drive roots cannot be deleted. Choose a file or folder inside the drive.');
   }
   return path;
 }
 function conflictingJob(jobs, path, kind) {
   const scope = (p, k) => k === 'extract' ? p.slice(0, p.lastIndexOf('/')) || '/' : p;
   const overlaps = (a, b) => a === b || a === '/' || b === '/' || a.startsWith(b + '/') || b.startsWith(a + '/');
-  return [...jobs.values()].some(job => job.path === path ||
+  return [...jobs.values()].some(job => job.kind === 'bulk-delete' || job.path === path ||
     ((['delete', 'extract'].includes(kind) || ['delete', 'extract'].includes(job.kind)) &&
       overlaps(scope(path, kind), scope(job.path, job.kind))));
 }
@@ -54,7 +54,7 @@ async function request(ctx, path, method = 'GET', body) {
   assertRuntime(ctx);
   const opts = {method, headers: new Headers({'Content-Type':'application/json'}), signal: AbortSignal.timeout(30000)};
   if (body !== undefined) opts.body = JSON.stringify(body);
-  const response = await (ctx.xhr.cfzOriginalFetch || ctx.xhr.fetch.bind(ctx.xhr))(path, opts);
+  const response = await ctx.xhr.fetch(path, opts);
   if (!response.ok) {
     const error = new Error(`Colab request failed (${response.status}) for ${path.split('?')[0]}.`);
     error.status = response.status;
@@ -124,5 +124,33 @@ function validateDetails(result, source) {
   }
   return result;
 }
+function planDeletion(items) {
+  if (!Array.isArray(items) || !items.length) throw new Error('Select at least one file or folder.');
+  const unique = new Map();
+  for (const item of items) {
+    if (!item || typeof item.isDirectory !== 'boolean') throw new Error('Invalid deletion selection.');
+    const path = deletionPath(item.path);
+    if (unique.has(path) && unique.get(path).isDirectory !== item.isDirectory) throw new Error('Conflicting file types in selection.');
+    unique.set(path, {path, isDirectory:item.isDirectory});
+  }
+  return [...unique.values()].filter(item => {
+    let parent = item.path.slice(0, item.path.lastIndexOf('/'));
+    while (parent) {
+      if (unique.get(parent)?.isDirectory) return false;
+      parent = parent.slice(0, parent.lastIndexOf('/'));
+    }
+    return true;
+  });
+}
+function validateDeletionStatus(result, plan) {
+  if (!result || !['deleting','complete'].includes(result.state) || result.total !== plan.length ||
+      !Array.isArray(result.results) || result.completed !== result.results.length || result.completed > plan.length ||
+      (result.state === 'complete' && result.completed !== plan.length) ||
+      !result.results.every((item, index) => item?.path === plan[index].path && typeof item.deleted === 'boolean' &&
+        (item.deleted || (typeof item.error === 'string' && typeof item.partial === 'boolean')))) {
+    throw new Error('Unexpected deletion result. Refresh Files before retrying.');
+  }
+  return result;
+}
 // Exports are removed by build.py; the browser bundle keeps these functions private.
-module.exports = {normalizePath, deletionPath, conflictingJob, isExtractable, extractionPath, validateExtraction, encodePath, quote, assertRuntime, request, put, openTerminal, validateArchive, formatBytes, validateDetails};
+module.exports = {normalizePath, deletionPath, conflictingJob, isExtractable, extractionPath, validateExtraction, encodePath, quote, assertRuntime, request, put, openTerminal, validateArchive, formatBytes, validateDetails, planDeletion, validateDeletionStatus};

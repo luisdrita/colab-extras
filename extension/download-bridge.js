@@ -11,7 +11,7 @@ window.addEventListener('message',async event=>{
 });
 
 // Settings are requested only by this extension's popup and applied in the
-// active Colab tab, so they remain part of that tab's Undo history.
+// active Colab tab, where its operation preferences are stored.
 chrome.runtime.onMessage.addListener((args,sender,reply)=>{
   if(sender.id!==chrome.runtime.id||sender.url!==chrome.runtime.getURL('popup.html')||args.channel!=='preferences')return;
   const id=crypto.randomUUID();

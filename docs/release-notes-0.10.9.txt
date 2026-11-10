@@ -1,0 +1,3 @@
+Colab Extras 0.10.9
+
+Restored loading circles to the right of file and folder names during bulk operations, matching the existing placement for other file tools. All selected items and visible affected descendants still receive progress indicators, including queued items and refreshed rows. Immediate actions, no confirmation dialogs, and the overlay-filesystem deletion fix are retained. No new permissions.

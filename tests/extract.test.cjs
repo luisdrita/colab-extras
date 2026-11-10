@@ -9,10 +9,10 @@ async function run(options={}){
   const path='/content/results/data.zip',events=[],jobs=new Map();
   const result={state:'extracted',path,destination:'/content/results',files:2,folders:1,done:12,total:12};
   const statuses=[...(options.statuses||[result])];
-  const ctx={...core,crypto:webcrypto,jobs,extractSource:'bundled Python',recoverySource:'recovery Python',undoBusy:false,undoPreferences:{overwrite:false},
+  const ctx={...core,crypto:webcrypto,jobs,extractSource:'bundled Python',fileOperationsSource:'file tools Python',preferences:{overwrite:false},
     setStatus:(job,label,detail,error,progress)=>events.push({type:'status',label,detail,error,progress}),
     finishStatus:(job,label,detail,error)=>events.push({type:'finish',label,detail,error}),
-    markUndoHistoryDirty:()=>{},addMenuItems:()=>{},context:()=>({}),
+    addMenuItems:()=>{},context:()=>({}),
     request:async(ctx,url,method)=>{
       events.push({type:'request',url,method});
       if(url.includes('status.json'))return {json:async()=>statuses.shift()};
@@ -47,7 +47,7 @@ test('blocked terminals produce an error without starting a script',async()=>{
 });
 test('partial extraction failures remain visible and refresh the sidebar',async()=>{
   const {events}=await run({statuses:[{state:'error',path:'/content/results/data.zip',destination:'/content/results',error:'CRC mismatch',partial:true}]});
-  assert.match(events.find(e=>e.type==='finish').detail,/Later changes were preserved/);
+  assert.match(events.find(e=>e.type==='finish').detail,/Some files could not be rolled back/);
   assert.ok(events.find(e=>e.type==='finish').error);
   assert.ok(events.some(e=>e.type==='refresh'));
   assert.ok(events.some(e=>e.type==='cleanup'));

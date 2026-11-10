@@ -1,0 +1,3 @@
+Colab Extras 0.10.5
+
+Right-clicking outside the selected file/folder title rows clears the entire selection immediately. This includes another unselected row, blank sidebar space, blank space within an expanded folder, and the rest of the Colab page. Right-clicking a selected row or its icons/menu button preserves the group for bulk actions. Any open bulk Delete label is reset when the selection clears. Clearing highlights does not change an already-confirmed deletion plan. No new UI controls or permissions.

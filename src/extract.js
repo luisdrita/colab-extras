@@ -1,7 +1,7 @@
 async function runExtract(target){
   let path;
   try{path=extractionPath(target.path);}catch(error){setStatus(target,'Extraction failed',error.message,true);return;}
-  if(jobs.size||undoBusy)return;
+  if(jobs.size)return;
   const id=crypto.randomUUID();
   const job={kind:'extract',path,view:target.view,id,dir:'/content/.colab-folder-zip-'+id,cancelled:false,terminal:null};
   jobs.set(path,job);setStatus(job,'Checking archive…');addMenuItems();
@@ -13,9 +13,9 @@ async function runExtract(target){
     job.terminal=await openTerminal(ctx);
     await request(ctx,'/api/contents/'+encodePath(job.dir),'PUT',{type:'directory'});job.created=true;
     await put(ctx,job.dir+'/extract_archive.py',extractSource);
-    await put(ctx,job.dir+'/recovery.py',recoverySource);
+    await put(ctx,job.dir+'/file_operations.py',fileOperationsSource);
     if(job.cancelled)throw new Error('Cancelled.');
-    job.terminal.send(`python3 -B ${quote(job.dir+'/extract_archive.py')} ${quote(path)} ${quote(job.dir)} --undo${undoPreferences.overwrite?' --overwrite':''}\n`);
+    job.terminal.send(`python3 -B ${quote(job.dir+'/extract_archive.py')} ${quote(path)} ${quote(job.dir)}${preferences.overwrite?' --overwrite':''}\n`);
     job.started=true;
     let misses=0,cancelSent=false;
     while(true){
@@ -32,6 +32,7 @@ async function runExtract(target){
       if(['error','cancelled'].includes(result.state)){
         if(result.path!==path||result.destination!==path.slice(0,path.lastIndexOf('/')))throw new Error('Unexpected extraction status.');
         job.settled=true;job.partial=Boolean(result.partial);job.backendCancelled=result.state==='cancelled';
+        job.temporaryOriginals=Array.isArray(result.temporary_originals)?result.temporary_originals.filter(p=>typeof p==='string'):[];
         throw new Error(result.error||'Extraction failed.');
       }
       validateExtraction(result,path);
@@ -46,13 +47,16 @@ async function runExtract(target){
   }catch(error){
     const cancelled=job.backendCancelled||(!job.started&&job.cancelled);
     let detail=error.message||'The connection to Colab was lost.';
-    if(job.partial)detail+=' Later changes were preserved. Resolve the remaining conflicts, then click Undo again.';
+    if(job.partial){
+      detail+=' Some files could not be rolled back. Check the extracted contents before retrying.';
+      if(job.temporaryOriginals?.length)detail+=' Temporary originals: '+job.temporaryOriginals.join(', ');
+    }
     else if(job.started&&!job.settled)detail+=' Refresh Files to check for partially extracted contents before retrying.';
     if(job.settled)try{await document.querySelector('colab-file-browser')?.currentTree?.refresh?.();}catch{}
     finishStatus(job,cancelled?'Extraction cancelled':'Extraction failed',detail,!cancelled||job.partial);
   }finally{
     await job.terminal?.close();
     if(job.settled||(job.created&&!job.started))await cleanup(job);
-    jobs.delete(path);markUndoHistoryDirty();addMenuItems();
+    jobs.delete(path);addMenuItems();
   }
 }
