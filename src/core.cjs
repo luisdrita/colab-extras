@@ -27,7 +27,8 @@ function conflictingJob(jobs, path, kind) {
     ((['delete', 'extract'].includes(kind) || ['delete', 'extract'].includes(job.kind)) &&
       overlaps(scope(path, kind), scope(job.path, job.kind))));
 }
-const isExtractable = path => typeof path === 'string' && /\.(zip|tar|tar\.gz|tgz)$/i.test(path);
+const archiveSuffix = /\.(?:tar\.gz|zip|tar|tgz)$/i;
+const isExtractable = path => typeof path === 'string' && archiveSuffix.test(path);
 function extractionPath(value) {
   const path = normalizePath(value);
   if (!isExtractable(path)) throw new Error('Choose a ZIP, TAR, TAR.GZ, or TGZ file.');
@@ -36,9 +37,17 @@ function extractionPath(value) {
   }
   return path;
 }
+function matchesExtractionDestination(result, source) {
+  if (!result || result.path !== source || typeof result.destination !== 'string') return false;
+  const slash = source.lastIndexOf('/');
+  const stem = source.slice(slash + 1).replace(archiveSuffix, '');
+  const base = source.slice(0, slash + 1) + (['', '.', '..'].includes(stem) ? 'archive' : stem);
+  return result.destination === base || (result.destination.startsWith(base) &&
+    /^ \([1-9][0-9]*\)$/.test(result.destination.slice(base.length)));
+}
 function validateExtraction(result, source) {
   const count = n => Number.isSafeInteger(n) && n >= 0;
-  if (!result || result.path !== source || result.destination !== source.slice(0, source.lastIndexOf('/')) ||
+  if (!matchesExtractionDestination(result, source) ||
       !['checking', 'extracting', 'extracted'].includes(result.state) ||
       !['files', 'folders', 'done', 'total'].every(key => count(result[key])) || result.done > result.total) {
     throw new Error('Unexpected extraction result. Refresh Files before retrying.');
@@ -124,11 +133,11 @@ function validateDetails(result, source) {
   }
   return result;
 }
-function planDeletion(items) {
+function planSelection(items) {
   if (!Array.isArray(items) || !items.length) throw new Error('Select at least one file or folder.');
   const unique = new Map();
   for (const item of items) {
-    if (!item || typeof item.isDirectory !== 'boolean') throw new Error('Invalid deletion selection.');
+    if (!item || typeof item.isDirectory !== 'boolean') throw new Error('Invalid file selection.');
     const path = deletionPath(item.path);
     if (unique.has(path) && unique.get(path).isDirectory !== item.isDirectory) throw new Error('Conflicting file types in selection.');
     unique.set(path, {path, isDirectory:item.isDirectory});
@@ -153,4 +162,4 @@ function validateDeletionStatus(result, plan) {
   return result;
 }
 // Exports are removed by build.py; the browser bundle keeps these functions private.
-module.exports = {normalizePath, deletionPath, conflictingJob, isExtractable, extractionPath, validateExtraction, encodePath, quote, assertRuntime, request, put, openTerminal, validateArchive, formatBytes, validateDetails, planDeletion, validateDeletionStatus};
+module.exports = {normalizePath, deletionPath, conflictingJob, isExtractable, extractionPath, matchesExtractionDestination, validateExtraction, encodePath, quote, assertRuntime, request, put, openTerminal, validateArchive, formatBytes, validateDetails, planSelection, planDeletion:planSelection, validateDeletionStatus};

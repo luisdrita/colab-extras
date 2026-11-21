@@ -72,8 +72,19 @@ async function managedDownload(job){
   try{
     const result=await bridgeDownload({action:'download',url,name:job.result.archive.split('/').pop(),operation:job.id});
     job.downloadId=result.id;
+    const key={id:result.id,operation:job.id};
+    let cancelSent=false;
+    while(true){
+      const cancel=job.cancelled&&!cancelSent;
+      const status=await bridgeDownload({action:cancel?'cancelJobDownload':'downloadState',...key});
+      if(cancel)cancelSent=true;
+      if(status.state==='complete')break;
+      if(status.state==='interrupted')throw new Error(status.error||'Chrome interrupted the download.');
+      if(status.state!=='in_progress')throw new Error('Chrome could not confirm the download status.');
+      await sleep(500);
+    }
   }finally{
-    // downloads.download resolves when Chrome has accepted the request.
+    // Allow a late browser handoff to finish if the helper lost its response.
     setTimeout(()=>URL.revokeObjectURL(url),60000);
   }
 }

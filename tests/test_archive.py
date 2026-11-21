@@ -54,6 +54,78 @@ class ArchiveTests(unittest.TestCase):
         with zipfile.ZipFile(status['archive']) as z:
             self.assertEqual(z.namelist(),[self.source.name+'/'])
 
+    def selected_zip(self, *choices):
+        args = [{'path': str(path), 'isDirectory': path.is_dir()} for path in choices]
+        (self.job / 'args.json').write_text(json.dumps(args))
+        return self.run_archive('--selection')
+
+    def test_selection_keeps_shared_relative_paths_and_only_requested_contents(self):
+        run_a, run_b = self.source / 'run a', self.source / 'run b'
+        run_a.mkdir()
+        run_b.mkdir()
+        (run_a / 'empty').mkdir()
+        (run_a / 'results.csv').write_text('a')
+        (run_b / 'results.csv').write_text('b')
+        (run_b / 'ignore').write_text('unselected')
+        existing = self.root / 'selected-files.zip'
+        existing.write_bytes(b'keep')
+        status = self.selected_zip(run_b / 'results.csv', run_a, run_a / 'results.csv', run_a)
+        self.assertEqual(status['state'], 'ready', status)
+        self.assertEqual(Path(status['archive']), self.root / 'selected-files (1).zip')
+        self.assertEqual(existing.read_bytes(), b'keep')
+        with zipfile.ZipFile(status['archive']) as archive:
+            self.assertIsNone(archive.testzip())
+            self.assertCountEqual(archive.namelist(), ['run a/', 'run a/empty/', 'run a/results.csv', 'run b/results.csv'])
+            self.assertEqual(archive.read('run a/results.csv'), b'a')
+            self.assertEqual(archive.read('run b/results.csv'), b'b')
+
+    def test_selection_of_files_preserves_names_and_links(self):
+        file = self.source / "café's scores.csv"
+        file.write_bytes(b'scores')
+        link = self.source / 'link'
+        link.symlink_to(file.name)
+        status = self.selected_zip(link, file)
+        with zipfile.ZipFile(status['archive']) as archive:
+            self.assertCountEqual(archive.namelist(), [file.name, link.name])
+            self.assertEqual(archive.read(file.name), b'scores')
+            self.assertTrue(stat.S_ISLNK(archive.getinfo(link.name).external_attr >> 16))
+
+    def test_invalid_selection_never_publishes_partial_zip(self):
+        file = self.source / 'real'
+        file.touch()
+        alias = self.root / 'alias'
+        alias.symlink_to(self.source, target_is_directory=True)
+        for invalid in [self.source / 'missing', self.root, self.job / 'args.json', alias / 'real',
+                        self.root / '..' / self.root.name / self.source.name / 'real']:
+            with self.subTest(invalid=invalid):
+                status = self.selected_zip(file, invalid)
+                self.assertEqual(status['state'], 'error', status)
+                self.assertFalse((self.root / 'selected-files.zip').exists())
+                self.assertFalse((self.job / 'archive.partial').exists())
+
+    def test_cancelled_selection_preserves_sources_and_existing_zip(self):
+        file = self.source / 'scores.csv'
+        file.write_text('keep')
+        existing = self.root / 'selected-files.zip'
+        existing.write_bytes(b'original')
+        (self.job / 'cancel').touch()
+        self.assertEqual(self.selected_zip(file, existing)['state'], 'cancelled')
+        self.assertEqual(file.read_text(), 'keep')
+        self.assertEqual(existing.read_bytes(), b'original')
+        self.assertFalse((self.root / 'selected-files (1).zip').exists())
+
+    def test_a_file_replaced_by_a_folder_is_not_included(self):
+        other = self.root / 'keep.txt'
+        other.touch()
+        (self.job / 'args.json').write_text(json.dumps([
+            {'path': str(self.source), 'isDirectory': False},
+            {'path': str(other), 'isDirectory': False},
+        ]))
+        status = self.run_archive('--selection')
+        self.assertEqual(status['state'], 'error')
+        self.assertIn('changed type', status['error'])
+        self.assertFalse((self.root / 'selected-files.zip').exists())
+
     def test_zip_saved_next_to_source_and_existing_archives_preserved(self):
         existing=self.source.with_name(self.source.name+'.zip')
         existing.write_bytes(b'keep this archive')

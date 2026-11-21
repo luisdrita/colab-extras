@@ -40,7 +40,7 @@ function showDetailsDialog(job){
   const view={closed:false,settled:false,close(){
     if(view.closed)return;
     view.closed=true;
-    if(!view.settled){job.cancelled=true;setStatus(job,'Cancelling scan…');}
+    if(!view.settled&&!job.finalizing){job.cancelled=true;setStatus(job,'Cancelling scan…');}
     dialog.close();host.remove();
     if(detailsDialog===view)detailsDialog=null;
     if(previous?.isConnected)previous.focus?.();
@@ -79,10 +79,11 @@ function showDetailsDialog(job){
 async function runDetails(target){
   let path;
   try{path=normalizePath(target.path);}catch(error){setStatus(target,'Details failed',error.message,true);return;}
-  if(conflictingJob(jobs,path,'details'))return;
+  if(jobs.size)return;
   const id=crypto.randomUUID();
   const job={kind:'details',path,view:target.view,id,dir:'/content/.colab-folder-zip-'+id,cancelled:false,terminal:null};
   const view=showDetailsDialog(job);
+  let failure;
   jobs.set(path,job);setStatus(job,'Scanning…');addMenuItems();
   try{
     job.ctx=context();const ctx=job.ctx;
@@ -94,6 +95,7 @@ async function runDetails(target){
     await put(ctx,job.dir+'/folder_details.py',detailsSource);
     if(job.cancelled){job.settled=true;return;}
     job.terminal.send(`python3 ${quote(job.dir+'/folder_details.py')} ${quote(path)} ${quote(job.dir)}\n`);
+    job.started=true;
     let misses=0,cancelSent=false;
     while(true){
       await sleep(500);
@@ -111,20 +113,18 @@ async function runDetails(target){
       validateDetails(result,path);
       if(result.state==='details'){
         job.settled=true;
-        if(!job.cancelled)view.render(result);
+        job.result=result;
         break;
       }
       view.progress(result);
     }
-    if(job.cancelled)view.error('Scan cancelled.');
-    finishStatus(job,job.cancelled?'Scan cancelled':'Details ready',path);
   }catch(error){
-    const message=error.message||'Connection to Colab was lost.';
-    view.error(message);finishStatus(job,job.cancelled?'Scan cancelled':'Details failed',message,!job.cancelled);
+    failure=error.message||'The connection to Colab was lost.';
   }finally{
-    await job.terminal?.close();
-    if(job.settled)await cleanup(job);
-    jobs.delete(path);addMenuItems();
-    if(job.cancelled)finishStatus(job,'Scan cancelled',path);
+    const warning=await finishRuntimeWork(job);
+    const detail=failure||(job.cancelled?'Scan cancelled.':job.path);
+    finishStatus(job,failure?'Details failed':job.cancelled?'Scan cancelled':'Details ready',detail,Boolean(failure),warning);
+    if(failure||job.cancelled)view.error(detail);
+    else view.render(job.result);
   }
 }

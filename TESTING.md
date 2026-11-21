@@ -1,3 +1,66 @@
+# Version 0.11.3 — 21 November 2026
+
+- In a hosted Colab notebook running the installed 0.11.3 release, nine checks deliberately held either temporary-file cleanup or the Files refresh across **Extract here**, **Download selected as ZIP**, **Delete selected items**, **Folder details** and **ZIP only**. The rings remained visible during each hold. Collapsing the active row's parent moved its ring to the Files toolbar. Expanding the folder returned the ring to the row.
+- During extraction, the menu stayed disabled through cleanup and refresh. As soon as the ring disappeared, the destination was visible and the same menu started a second extraction. Both the named folder and the numbered folder contained the expected files. After batch deletion, both selected rows were gone, the unselected sibling remained, and the next action was available. Folder details showed the expected 20-byte result after cleanup.
+- Hosted Colab used the native download path. The grouped ZIP downloaded once, passed its CRC checks and had the same SHA-256 as the runtime archive. A separate disposable Chromium profile with the downloads permission granted exercised the managed path against a local notebook fixture. Chrome reported the download complete and the saved file matched the source byte for byte.
+- All 101 Python tests, 71 JavaScript tests and 47 browser check groups passed. Coverage includes delayed cleanup and sidebar refresh, replaced rows, refresh failures, download interruption and action availability after completion. The packaged Python workers also passed the group ZIP and extraction status-timeout regressions in a local Chrome fixture.
+
+### Three-item selection follow-up
+
+On the hosted runtime, all three selected file rows showed “Finishing…” during ZIP cleanup and “Updating Files…” during the extension's own Files refresh. Both group menu actions stayed disabled. The downloaded ZIP contained precisely the three expected files, with matching bytes and valid CRCs. When the rings cleared, the same group menu immediately started **Delete selected items (3)**.
+
+During deletion, all three rows kept their rings through cleanup. Colab removed the rows during refresh, and the ring remained visible in the Files toolbar. When refresh finished, the toolbar ring cleared, the unselected copy was still visible and **Folder details** was enabled. Two additional automated browser checks in `tests/browser-completion.cjs` cover the three-item sequence, including a stalled ZIP transfer and an early-finishing delete target.
+
+---
+
+# Version 0.11.2 — 21 November 2026
+
+- All 101 Python tests and 69 JavaScript tests passed. Archive cases include flat and mixed contents, an existing matching wrapper, empty archives, repeated extractions, compound suffixes, name collisions, replacement within the named folder and rollback on cancellation.
+- In local Chrome, the packaged sidebar and Python workers recovered from interrupted completion reads for a group ZIP and for extraction. Extracting `demo.zip` produced `demo/loose.txt`, `demo/payload/data.txt` and `demo/payload/empty/`. The test verified the sibling files, existing directory and source ZIP were preserved. All 46 selection and navigation browser check groups also passed.
+- The verified ZIP and unpacked installation match byte for byte.
+- After reloading the extension, a fresh Chrome tab on a hosted Colab Python 3 runtime reported version 0.11.2. Using the Files sidebar, we ran **Extract here** twice on the same `field-notes.zip`, which contained only two loose files. The first extraction created `field-notes/` and the second created `field-notes (1)/`. Both contained byte-identical copies of `notes.txt` and `scores.csv`. The first folder's files retained their original identities and modification times, the source ZIP retained its SHA-256, and the parent contained exactly the ZIP and the two folders.
+
+---
+
+# Version 0.11.1 — 21 November 2026
+
+- Reproduced the group ZIP bug on 0.11.0. After the worker wrote a valid archive, one timed-out status read produced “ZIP failed” and zero downloads.
+- In isolated Chrome with the 0.11.1 bundle and its Python workers, dropped the first status request after ZIP creation and interrupted the first status response body after extraction. Each action read the same job a second time. Chrome downloaded one ZIP with the expected entries, contents and CRCs. Extraction created one numbered output directory with the expected file and empty subdirectory. The existing ZIP, source archive and pre-existing extraction directory were preserved.
+- All 69 JavaScript tests, 96 Python tests and 46 Chrome selection and navigation check groups passed. Regression cases include consecutive timeouts, persistent status loss, a runtime change and a confirmed worker error after recovery.
+
+### Hosted Colab timeout regression
+
+Verified the installed 0.11.1 page marker in Chrome on a Python 3 Google Compute Engine notebook. A temporary test hook held the first completed status response for each sidebar action until the extension's own 30-second request deadline expired. The ZIP test interrupted the fetch and the extraction test interrupted the response body. Each sidebar showed “Rechecking status…” and read the same worker job again. The test restored the original transport afterward.
+
+- **Download selected as ZIP** recovered from a 30.002-second timeout. One new runtime ZIP and one matching Chrome download contained four entries, including two different files named `item.txt` and an empty directory. CRCs, expected contents and the runtime/download SHA-256 matched. The unselected sibling stayed out of the ZIP.
+- **Extract here** recovered from a 30.001-second timeout. It produced exactly one numbered output directory containing the expected bytes and an empty subdirectory. The original archive hash and the existing directory's sentinel file were preserved.
+
+---
+
+# Version 0.11.0 — 21 November 2026
+
+- All 96 Python and 62 JavaScript tests passed. ZIP coverage includes mixed selections, duplicate basenames, overlapping paths, empty folders, preserved links, output name collisions, cancellation, changed file types, and stale runtimes.
+- The Chrome selection and navigation suites passed all 46 check groups in the local Colab simulator. Group ZIP and Delete were exercised separately with mouse and keyboard. Windows Ctrl-click was emulated on macOS.
+- An additional Chrome download check ran the bundled Python worker on disposable local files and verified the downloaded ZIP byte for byte. It contained both same-named files at their expected paths and the selected empty directory. The existing ZIP and unselected sibling were preserved.
+
+### Hosted Colab checks on 21 November 2026
+
+The test used a disposable notebook on a Python 3 Google Compute Engine runtime. The first session ran sidebar version 0.10.14. The packaged 0.11.0 selection worker was tested separately on the same VM. Its SHA-256 was verified before execution.
+
+- The selection worker created two numbered ZIPs from one folder and two loose files. Each archive contained the six expected entries, including two different `results.csv` files, a hidden file and an empty folder. Both passed CRC and content checks. A copy downloaded through Colab’s native file menu also passed local inspection.
+- Through the 0.10.14 sidebar, Folder details correctly counted 22 bytes, two files and one subfolder. ZIP only and ZIP and download produced separate archives. ZIP cancellation preserved the 48 MiB source and left no archive. Recursive and mixed batch deletion removed only the requested fixtures. Back to /content returned from the runtime root.
+- ZIP extraction preserved the original archive and both numbered output trees. TAR.GZ extraction produced the expected bytes. A malformed ZIP produced an explicit error. Cancelling extraction preserved its source archive and left no extracted file.
+- A status request timed out during one successful ZIP extraction. The sidebar displayed “Extraction failed” while the retained worker status was `extracted` and both extracted trees passed content checks. The timeout reporting branch is also present in 0.11.0.
+
+#### Installed 0.11.0 sidebar
+
+- A fresh notebook tab reported the 0.11.0 extension marker on the hosted runtime. Command-clicking a folder and two files exposed both group actions. The ZIP action displayed progress on all three rows and started one local download. Keyboard activation produced one more download. Both archives contained exactly six expected entries and matched the SHA-256 of their runtime copies (`20d214224cc1c2f4596c4178b2bf6669c1eb7d79b236210419c8bc296632b31c`). Earlier archives kept their names. A separate two-file selection preserved both `results.csv` paths and their different contents, excluding every sibling.
+- Cancelling a 48 MiB group ZIP from another participating row after clearing the selection left both sources intact and produced no new archive or download. Arrow-key navigation from ZIP to Delete followed by Enter removed only the selected disposable folder and file. The unselected sentinel remained intact.
+- A folder containing a named pipe produced errors on both selected rows without publishing a partial ZIP. Replacing the pipe with a regular fixture and retrying produced one verified download. Single-folder ZIP only, ZIP and download, folder details, numbered extraction, and Back to /content also passed on the installed build.
+- A separate local test ran the packaged group-ZIP worker and UI handler and dropped the first status response after the worker had published a valid archive. The UI labelled the ZIP failed and skipped the download without rereading the available completion status. This demonstrates the group-ZIP timeout issue under controlled conditions. The hosted timeout observed above occurred during extraction.
+
+---
+
 # Version 0.10.14 — 10 November 2026
 
 - Added Back to /content in the Files pane's parent-navigation area when browsing outside /content. It returns directly to the session folder and hides inside /content and its descendants. Native parent navigation is preserved. The shortcut follows Colab's theme, supports mouse and keyboard activation, clears stale selection, and disables duplicate clicks while refreshing. Failures appear inline and can be retried; stale callbacks cannot change a replacement runtime/tree or overwrite a newer navigation.

@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "name": "Colab Extras",
   "short_name": "Colab Extras",
-  "version": "0.10.14",
-  "description": "Google Colab file tools: inspect folders, ZIP and download, extract archives, and bulk-delete files and folders.",
+  "version": "0.11.3",
+  "description": "Google Colab file tools: download selected files and folders as one ZIP, inspect folders, extract archives, and bulk-delete items.",
   "minimum_chrome_version": "120",
   "icons": {
     "16": "icons/icon-16.png",

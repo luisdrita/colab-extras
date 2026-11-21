@@ -28,7 +28,7 @@ test('malformed saved preferences use defaults',()=>{
 });
 test('managed downloads use the job id without a recovery result',async()=>{
   const {sandbox}=setup();const calls=[];
-  Object.assign(sandbox,{bridgeDownload:async args=>{calls.push(args);return {granted:true,id:42};},
+  Object.assign(sandbox,{bridgeDownload:async args=>{calls.push(args);return args.action==='download'?{id:42}:{state:'complete'};},
     request:async()=>({blob:async()=>({})}),encodePath:p=>p.slice(1),
     URL:{createObjectURL:()=> 'blob:test',revokeObjectURL:()=>{}},setTimeout:()=>{}});
   const job={id:'job-uuid',ctx:{},result:{archive:'/content/results.zip'}};
@@ -110,4 +110,29 @@ test('starting the generated bundle leaves native file APIs untouched and starts
   vm.runInContext(fs.readFileSync(path.join(__dirname,'../extension/colab-zip.js'),'utf8'),sandbox);
   assert.equal(files.write,write);assert.equal(xhr.fetch,fetch);
   assert.equal(callbacks.length,1); // Menus, progress and selection; no history.
+});
+
+test('managed download waits for a terminal Chrome state and handles cancellation and interruption',async()=>{
+  for(const mode of ['complete','cancel','interrupted']){
+    const {sandbox}=setup(),calls=[];
+    const job={id:'job',ctx:{},result:{archive:'/content/a.zip'}};
+    let polls=0;
+    Object.assign(sandbox,{
+      bridgeDownload:async args=>{
+        calls.push(args.action);
+        if(args.action==='download')return {id:23};
+        assert.equal(args.id,23);assert.equal(args.operation,'job');
+        if(++polls===1||args.action==='cancelJobDownload')return {state:'in_progress'};
+        return {state:mode==='complete'?'complete':'interrupted',error:'interrupted'};
+      },
+      request:async()=>({blob:async()=>({})}),encodePath:p=>p.slice(1),
+      URL:{createObjectURL:()=> 'blob:test',revokeObjectURL:()=>{}},setTimeout:()=>{},
+      sleep:async()=>{if(mode==='cancel')job.cancelled=true;}
+    });
+    if(mode==='complete')await sandbox.managedDownload(job);
+    else await assert.rejects(sandbox.managedDownload(job),/interrupted/);
+    assert.ok(polls>=2);
+    assert.equal(calls.filter(c=>c==='download').length,1);
+    assert.equal(calls.filter(c=>c==='cancelJobDownload').length,mode==='cancel'?1:0);
+  }
 });

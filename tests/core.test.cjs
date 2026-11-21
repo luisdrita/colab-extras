@@ -20,10 +20,13 @@ test('extraction locks the destination and blocks conflicting jobs in both direc
   assert.ok(conflictingJob(new Map([['x',{kind:'zip',path:'/content/results'}]]),'/content/results/data.zip','extract'));
   assert.ok(conflictingJob(new Map([['x',{kind:'extract',path:'/content/a.zip'}]]),'/content/sub/b.zip','extract'));
 });
-test('extraction result is tied to the selected archive and its parent',()=>{
-  const result={state:'extracted',path:'/content/a.zip',destination:'/content',files:2,folders:1,done:12,total:12};
+test('extraction result is tied to the selected archive and its named output folder',()=>{
+  const result={state:'extracted',path:'/content/a.zip',destination:'/content/a',files:2,folders:1,done:12,total:12};
   assert.equal(validateExtraction(result,result.path),result);
-  for(const patch of [{destination:'/tmp'},{path:'/content/b.zip'},{files:-1},{folders:0.2},{done:13},{total:NaN},{state:'ready'}])assert.throws(()=>validateExtraction({...result,...patch},result.path));
+  for(const [source,destination] of [['/content/a.zip','/content/a (2)'],['/content/Data.v2.TAR.GZ','/content/Data.v2'],['/content/...zip','/content/archive']]){
+    assert.ok(validateExtraction({...result,path:source,destination},source));
+  }
+  for(const patch of [{destination:'/content'},{destination:'/content/a/nested'},{destination:'/content/ab (1)'},{destination:'/content/a (0)'},{destination:'/tmp'},{path:'/content/b.zip'},{files:-1},{folders:0.2},{done:13},{total:NaN},{state:'ready'}])assert.throws(()=>validateExtraction({...result,...patch},result.path));
 });
 function setup(fail=false){
   const calls=[];

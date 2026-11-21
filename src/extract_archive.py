@@ -1,4 +1,4 @@
-"""Extract beside an archive, numbering collisions unless replacement is enabled."""
+"""Extract into one archive-named directory beside the source."""
 import contextlib, hashlib, json, os, pathlib, signal, stat, sys, tarfile, time, zipfile
 
 source = pathlib.Path(sys.argv[1]).absolute()
@@ -7,63 +7,53 @@ started = time.monotonic()
 files = folders = done = 0
 MAX_ENTRIES = 100000
 DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+from itertools import count
 from file_operations import Store, Transaction
 file_store = Store()
 transaction = Transaction(file_store, 'Extract: ' + source.name)
 overwrite = '--overwrite' in sys.argv
 overwrite_expected = {}
-created_roots = {}
+archive_suffix = next((ext for ext in ('.tar.gz', '.tgz', '.tar', '.zip')
+                       if source.name.lower().endswith(ext)), '')
+folder_name = source.name[:-len(archive_suffix)] if archive_suffix else source.name
+if folder_name in ('', '.', '..'):
+    folder_name = 'archive'
+output_folder = source.parent / folder_name
+output_identity = None
 
-def numbered_name(name, index, is_dir):
-    if index == 0:
-        return name
-    suffix = '' if is_dir else pathlib.Path(name).suffix
-    stem = name[:-len(suffix)] if suffix else name
-    return stem + ' (' + str(index) + ')' + suffix
-
-def available_name(root_fd, name, is_dir, reserved):
-    index = 0
-    while True:
+def reserve_folder(root_fd):
+    """Reserve the entire output tree before writing any member."""
+    global output_folder, output_identity
+    for index in count():
         check_cancelled()
-        candidate = numbered_name(name, index, is_dir)
-        index += 1
-        # Do not steal another root name declared by this same archive.
-        if candidate != name and candidate in reserved:
-            continue
+        name = folder_name if index == 0 else f'{folder_name} ({index})'
+        path = source.parent / name
         try:
-            os.stat(candidate, dir_fd=root_fd, follow_symlinks=False)
-        except FileNotFoundError:
-            return candidate
-
-def prepare_destinations(root_fd, entries):
-    """Reserve fresh root folders so separate extractions cannot merge trees."""
-    global folders
-    roots = {}
-    for _, parts, is_dir, _ in entries:
-        roots[parts[0]] = roots.get(parts[0], False) or len(parts) > 1 or is_dir
-    reserved = set(roots)
-    names = {}
-    for name, is_dir in roots.items():
-        while True:
-            candidate = available_name(root_fd, name, is_dir, reserved)
-            if not is_dir:
-                break
-            try:
-                os.mkdir(candidate, mode=0o755, dir_fd=root_fd)
-            except FileExistsError:
-                # Another extraction may have taken the candidate meanwhile.
+            file_store.path(path)
+        except ValueError:
+            if index == 0:  # A stem such as "drive" can designate a protected root.
                 continue
-            info = os.stat(candidate, dir_fd=root_fd, follow_symlinks=False)
-            created_roots[candidate] = (info.st_dev, info.st_ino)
-            folders += 1
-            transaction.created(source.parent / candidate, directory=True)
-            break
-        names[name] = candidate
-        reserved.add(candidate)
-    return names, reserved
+            raise
+        try:
+            os.mkdir(name, mode=0o755, dir_fd=root_fd)
+            created = True
+        except FileExistsError:
+            if not overwrite or index != 0:
+                continue
+            created = False
+        info = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
+        if not stat.S_ISDIR(info.st_mode):
+            if created:
+                raise RuntimeError('The extraction folder changed.')
+            continue
+        output_folder = path
+        output_identity = (info.st_dev, info.st_ino)
+        if created:
+            transaction.created(path, directory=True)
+        return
 
 def report(**data):
-    data.update(path=str(source), destination=str(source.parent), files=files,
+    data.update(path=str(source), destination=str(output_folder), files=files,
                 folders=folders, done=done, elapsed=round(time.monotonic() - started, 1))
     tmp = job / 'status.tmp'
     tmp.write_text(json.dumps(data), encoding='utf-8')
@@ -95,7 +85,8 @@ def directory(root_fd, parts, create=False):
         for part in parts:
             traversed.append(part)
             check_cancelled()
-            if create:
+            is_output = len(traversed) == 1 and output_identity is not None and part == output_folder.name
+            if create and not is_output:
                 try:
                     os.mkdir(part, mode=0o755, dir_fd=fd)
                     folders += 1
@@ -103,9 +94,9 @@ def directory(root_fd, parts, create=False):
                 except FileExistsError:
                     pass
             child = os.open(part, DIR_FLAGS, dir_fd=fd)
-            if len(traversed) == 1 and part in created_roots:
+            if is_output:
                 info = os.fstat(child)
-                if (info.st_dev, info.st_ino) != created_roots[part]:
+                if (info.st_dev, info.st_ino) != output_identity:
                     os.close(child)
                     raise RuntimeError('The extraction folder changed; it was preserved.')
             os.close(fd)
@@ -121,9 +112,7 @@ def check_destination(root_fd, parts, is_dir):
                 existing = os.stat(parts[-1], dir_fd=parent, follow_symlinks=False)
             except FileNotFoundError:
                 return
-            if overwrite and not is_dir and stat.S_ISREG(existing.st_mode):
-                if source.parent.joinpath(*parts) == source:
-                    raise ValueError('Extraction cannot replace its own archive.')
+            if not is_dir and stat.S_ISREG(existing.st_mode):
                 overwrite_expected[parts] = transaction.store.fingerprint(source.parent.joinpath(*parts))
                 return
             if not (is_dir and stat.S_ISDIR(existing.st_mode)):
@@ -133,9 +122,8 @@ def check_destination(root_fd, parts, is_dir):
 
 def extract(root_fd, archive_file):
     global files, done
-    name = source.name.lower()
-    is_zip = name.endswith('.zip')
-    if not is_zip and not name.endswith(('.tar', '.tar.gz', '.tgz')):
+    is_zip = archive_suffix == '.zip'
+    if not archive_suffix:
         raise ValueError('Supported archives: .zip, .tar, .tar.gz, .tgz')
     opener = zipfile.ZipFile(archive_file) if is_zip else tarfile.open(fileobj=archive_file, mode='r:*')
     with opener as archive:
@@ -171,24 +159,29 @@ def extract(root_fd, archive_file):
                 total += size
             if index % 500 == 0:
                 report(state='checking', total=total)
-        # Validate every archive path before reserving output folders.
+        # Validate every archive path before creating the output folder.
         for _, parts, is_dir, _ in entries:
             check_cancelled()
             if any(types.get(parts[:i]) is False for i in range(1, len(parts))):
                 raise ValueError('Archive uses a file as a directory: ' + '/'.join(parts))
-            if overwrite:
-                check_destination(root_fd, parts, is_dir)
         space = os.fstatvfs(root_fd)
         if total > space.f_bavail * space.f_frsize:
             raise OSError('Not enough free disk space to extract this archive')
-        names, reserved = ({}, set()) if overwrite else prepare_destinations(root_fd, entries)
+        # Reuse a matching wrapper stored in the archive. With mixed roots,
+        # preserve every path exactly as stored inside the new output directory.
+        wrapped = bool(entries) and all(parts[0] == folder_name and (is_dir or len(parts) > 1)
+                                        for _, parts, is_dir, _ in entries)
+        reserve_folder(root_fd)
+        entries = [(item, (output_folder.name,) + (parts[1:] if wrapped else parts), is_dir, size)
+                   for item, parts, is_dir, size in entries]
+        if overwrite:
+            for _, parts, is_dir, _ in entries:
+                check_cancelled()
+                check_destination(root_fd, parts, is_dir)
         report(state='extracting', total=total)
         last = time.monotonic()
         for item, parts, is_dir, size in entries:
             check_cancelled()
-            original_root = parts[0]
-            if not overwrite:
-                parts = (names[original_root],) + parts[1:]
             with directory(root_fd, parts if is_dir else parts[:-1], create=True) as parent:
                 if is_dir:
                     continue
@@ -199,19 +192,8 @@ def extract(root_fd, archive_file):
                         raise RuntimeError('Destination changed after extraction preflight; it was preserved.')
                     replaced = transaction.remove(destination, expected=overwrite_expected[parts])
                 # O_EXCL also rejects symlinks and files created after preflight.
-                while True:
-                    try:
-                        fd = os.open(parts[-1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=parent)
-                        break
-                    except FileExistsError:
-                        if overwrite or len(parts) != 1:
-                            raise
-                        # A loose-file collision can also appear after preflight.
-                        candidate = available_name(root_fd, original_root, False, reserved)
-                        reserved.add(candidate)
-                        names[original_root] = candidate
-                        parts = (candidate,)
-                        destination = source.parent / candidate
+                fd = os.open(parts[-1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             0o644, dir_fd=parent)
                 identity = os.fstat(fd)
                 digest = hashlib.sha256()
                 copied = 0
