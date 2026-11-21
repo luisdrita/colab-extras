@@ -1,9 +1,8 @@
 import errno, json, os, pathlib, signal, stat, sys, time, zipfile
 
-source = pathlib.Path(sys.argv[1]).absolute()
+selection = sys.argv[1] == '--selection'
 job = pathlib.Path(sys.argv[2]).absolute()
 status = job / 'status.json'
-archive = job / (source.name + '.zip')
 partial = job / 'archive.partial'
 started = time.monotonic()
 
@@ -23,13 +22,66 @@ def check_cancelled():
 def walk_error(error):
     raise error
 
-def publish_archive(staged):
-    """Keep the ZIP beside the source without ever replacing an existing path."""
+def selected_sources():
+    root = job.parent
+    items = json.loads((job / 'args.json').read_text(encoding='utf-8'))
+    if not isinstance(items, list) or len(items) < 2:
+        raise ValueError('Select two or more files or folders.')
+    paths = {}
+    for item in items:
+        check_cancelled()
+        value = item['path']
+        path = pathlib.Path(value)
+        parts = path.relative_to(root).parts
+        if (not parts or path.as_posix() != value or '..' in parts or
+                any(part.startswith('.colab-folder-zip-') for part in parts)):
+            raise ValueError('Invalid ZIP selection: ' + value)
+        if parts == ('drive',) or parts == ('drive', 'MyDrive') or (
+                parts[:2] == ('drive', 'Shareddrives') and len(parts) <= 3):
+            raise ValueError('Select items inside the drive.')
+        for parent in path.parents:
+            if parent == root:
+                break
+            if parent.is_symlink():
+                raise ValueError('Cannot archive through a symbolic-link folder: ' + str(parent))
+        is_directory = item['isDirectory']
+        if not isinstance(is_directory, bool) or (path in paths and paths[path] != is_directory):
+            raise ValueError('Invalid file type in ZIP selection: ' + value)
+        paths[path] = is_directory
+    return {path: paths[path] for path in sorted(paths) if paths.keys().isdisjoint(path.parents)}
+
+def archive_entries(source, is_directory):
+    before = source.lstat()
+    if not stat.S_ISLNK(before.st_mode) and stat.S_ISDIR(before.st_mode) != is_directory:
+        raise ValueError('The selected item changed type: ' + str(source))
+    if not stat.S_ISDIR(before.st_mode):
+        yield source, before
+        return
+    for current, dirs, files in os.walk(source, followlinks=False, onerror=walk_error):
+        check_cancelled()
+        current = pathlib.Path(current)
+        current_stat = current.lstat()
+        if not stat.S_ISDIR(current_stat.st_mode):
+            raise RuntimeError('Folder changed during scanning: ' + str(current))
+        yield current, current_stat
+        dirs[:] = sorted(d for d in dirs if not d.startswith('.colab-folder-zip-'))
+        for name in dirs.copy():
+            path = current / name
+            if path.is_symlink():
+                yield path, path.lstat()
+                dirs.remove(name)
+        for name in sorted(files):
+            check_cancelled()
+            path = current / name
+            yield path, path.lstat()
+
+def publish_archive(staged, stem):
+    """Publish the ZIP without ever replacing an existing path."""
     index = 0
     while True:
         check_cancelled()
         suffix = '' if index == 0 else ' (' + str(index) + ')'
-        destination = source.parent / (source.name + suffix + '.zip')
+        destination = stem.with_name(stem.name + suffix + '.zip')
         try:
             # Same filesystem: publish the completed archive atomically.
             os.link(staged, destination)
@@ -77,31 +129,24 @@ except (AttributeError, OSError):
     pass
 try:
     job.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if not source.is_dir() or source.is_symlink() or source == pathlib.Path('/'):
-        raise ValueError('Select a regular folder below the filesystem root')
-    if source.name.startswith('.colab-folder-zip-'):
-        raise ValueError('Select your original folder, not a ZIP staging folder')
     (job / 'pid').write_text(str(os.getpid()))
     report(state='scanning')
+    if selection:
+        sources = selected_sources()
+        base = pathlib.Path(os.path.commonpath([p.parent for p in sources]))
+        stem = job.parent / 'selected-files'
+    else:
+        source = pathlib.Path(sys.argv[1]).absolute()
+        if not source.is_dir() or source.is_symlink() or source == pathlib.Path('/'):
+            raise ValueError('Select a regular folder below the filesystem root')
+        if source.name.startswith('.colab-folder-zip-'):
+            raise ValueError('Select your original folder, not a ZIP staging folder')
+        sources, base, stem = {source: True}, source.parent, source
     entries = []
     total = 0
-    for current, dirs, files in os.walk(source, followlinks=False, onerror=walk_error):
-        check_cancelled()
-        current = pathlib.Path(current)
-        dirs.sort(); files.sort()
-        # Do not include this extension's staging folders or follow symbolic links.
-        dirs[:] = [d for d in dirs if not d.startswith('.colab-folder-zip-')]
-        for name in list(dirs):
-            p = current / name
-            if p.is_symlink():
-                entries.append((p, p.lstat()))
-                dirs.remove(name)
-        entries.append((current, current.lstat()))
-        for name in files:
-            check_cancelled()
-            p = current / name
-            st = p.lstat()
-            if not (stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode)):
+    for source, is_directory in sources.items():
+        for p, st in archive_entries(source, is_directory):
+            if not (stat.S_ISDIR(st.st_mode) or stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode)):
                 raise ValueError('Cannot archive special file: ' + str(p))
             entries.append((p, st))
             if stat.S_ISREG(st.st_mode): total += st.st_size
@@ -111,7 +156,7 @@ try:
     with zipfile.ZipFile(partial, 'x', compression=zipfile.ZIP_DEFLATED, compresslevel=1, allowZip64=True, strict_timestamps=False) as z:
         for p, before in entries:
             check_cancelled()
-            rel = str(p.relative_to(source.parent))
+            rel = p.relative_to(base).as_posix()
             if stat.S_ISLNK(before.st_mode):
                 info = zipfile.ZipInfo(rel)
                 info.create_system = 3
@@ -119,13 +164,17 @@ try:
                 z.writestr(info, os.readlink(p).encode('utf-8'))
                 count += 1
             elif stat.S_ISDIR(before.st_mode):
-                z.write(p, rel + '/')
+                info = zipfile.ZipInfo.from_file(p, rel, strict_timestamps=False)
+                if not info.is_dir():
+                    raise RuntimeError('Folder changed before compression: ' + str(p))
+                z.writestr(info, b'')
             else:
                 # Refuse a symlink swapped in after enumeration.
-                fd = os.open(p, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+                fd = os.open(p, os.O_RDONLY | getattr(os, 'O_NONBLOCK', 0) | getattr(os, 'O_NOFOLLOW', 0))
                 with os.fdopen(fd, 'rb') as inp:
                     now = os.fstat(inp.fileno())
-                    if (before.st_ino, before.st_size, before.st_mtime_ns) != (now.st_ino, now.st_size, now.st_mtime_ns):
+                    if (not stat.S_ISREG(now.st_mode) or not os.path.samestat(before, now) or
+                            (before.st_size, before.st_mtime_ns) != (now.st_size, now.st_mtime_ns)):
                         raise RuntimeError('File changed before compression: ' + str(p))
                     info = zipfile.ZipInfo.from_file(p, rel, strict_timestamps=False)
                     info.compress_type = zipfile.ZIP_DEFLATED
@@ -143,9 +192,8 @@ try:
                     if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
                         raise RuntimeError('File changed during compression: ' + str(p))
                 count += 1
-    os.replace(partial, archive)
-    saved = publish_archive(archive)
-    archive.unlink(missing_ok=True)
+    saved = publish_archive(partial, stem)
+    partial.unlink(missing_ok=True)
     report(state='ready', archive=str(saved), size=saved.stat().st_size, done=done, total=total, files=count)
 except BaseException as exc:
     try: partial.unlink(missing_ok=True)

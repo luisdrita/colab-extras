@@ -19,9 +19,9 @@ function harness({granted=true,owner='extension-id'}={}){
   };
   const sandbox={chrome,URL};vm.createContext(sandbox);
   vm.runInContext(fs.readFileSync(path.join(__dirname,'../extension/downloads.js'),'utf8'),sandbox);
-  const send=(args,popup=false)=>new Promise(resolve=>callback(args,popup?
-    {url:chrome.runtime.getURL('popup.html')}:{url:'https://colab.research.google.com/drive/test',tab:{id:1}},resolve));
-  return {send,calls};
+  const send=(args,popup=false,tabId=1)=>new Promise(resolve=>callback(args,popup?
+    {url:chrome.runtime.getURL('popup.html')}:{url:'https://colab.research.google.com/drive/test',tab:{id:tabId}},resolve));
+  return {send,calls,items};
 }
 const download={action:'download',url:'blob:https://colab.research.google.com/abc',name:'test.zip',operation:'11111111-1111-4111-8111-111111111111'};
 test('managed downloads retain an exact operation association',async()=>{
@@ -55,4 +55,19 @@ test('only Colab blob ZIP downloads are accepted',async()=>{
   assert.ok((await send({...download,url:'https://example.com/file'})).error);
   assert.ok((await send({...download,name:'../file.zip'})).error);
   assert.equal(calls.length,0);
+});
+
+test('only the originating tab and job can observe or cancel its tracked download',async()=>{
+  const {send,calls,items}=harness();
+  const {id}=(await send(download)).result;
+  const key={id,operation:download.operation};
+  items.get(id).state='in_progress';
+  assert.equal((await send({...key,action:'downloadState'})).result.state,'in_progress');
+  assert.ok((await send({...key,action:'downloadState'},false,9)).error);
+  assert.ok((await send({...key,action:'cancelJobDownload',operation:'different'})).error);
+  assert.equal(calls.filter(c=>c[0]==='cancel').length,0);
+  await send({...key,action:'cancelJobDownload'});
+  assert.equal(calls.filter(c=>c[0]==='cancel').length,1);
+  items.get(id).state='complete';
+  assert.equal((await send({...key,action:'downloadState'})).result.state,'complete');
 });

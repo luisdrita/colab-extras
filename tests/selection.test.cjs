@@ -1,6 +1,7 @@
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
+const completion=fs.readFileSync(require('node:path').join(__dirname,'../src/completion.js'),'utf8');
 const vm=require('node:vm');
 const core=require('../src/core.cjs');
 const source=fs.readFileSync(require('node:path').join(__dirname,'../src/selection.js'),'utf8');
@@ -45,9 +46,9 @@ async function run(options={}){
       return {json:async()=>({state:options.networkFailure?'deleting':'complete',total:plan.length,completed:options.networkFailure?1:plan.length,results:options.networkFailure?results.slice(0,1):results})};
     },put:async(ctx,path,content)=>events.push({put:path,content}),sleep:async()=>{},deleteSource:'worker',
     cleanup:async()=>events.push({cleaned:true}),filePath:view=>view.path,
-    document:{querySelectorAll:()=>options.visible||[],querySelector:()=>({currentTree:{refresh:async()=>events.push({refreshed:true})}})}};
+    document:{querySelectorAll:()=>options.visible||[],querySelector:q=>q!=='colab-file-browser'?null:({currentTree:{refresh:async()=>events.push({refreshed:true})}})}};
   vm.createContext(sandbox);
-  vm.runInContext(source.slice(source.indexOf('function forgetDeletedSelection'),source.indexOf('function setSelection'))+source.slice(source.indexOf('function batchRoot'),source.lastIndexOf('refreshSelection();')),sandbox);
+  vm.runInContext(completion+'\n'+source.slice(source.indexOf('function forgetDeletedSelection'),source.indexOf('function setSelection'))+source.slice(source.indexOf('function batchRoot'),source.lastIndexOf('refreshSelection();')),sandbox);
   if(options.changedRuntime)ctx.kernel.runtime={};
   await sandbox.runBulkDelete(options.explicit?targets:null);
   return {events,selectionState,jobs:sandbox.jobs};

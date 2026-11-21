@@ -1,0 +1,8 @@
+Colab Extras 0.11.3
+
+- Download several files and folders as one ZIP from the Colab Files sidebar. Hold Command on Mac or Ctrl on Windows and Linux to select them, then right-click and choose Download selected as ZIP. The archive preserves relative paths and empty folders.
+- Extract here puts ZIP, TAR, TAR.GZ and TGZ contents in a folder named after the archive. Extracting again creates a numbered folder by default.
+- If Colab times out reporting that a ZIP or extraction finished, the extension checks the same job again. This avoids duplicate downloads and false failure messages.
+- Progress circles remain through cleanup and sidebar refresh for single and grouped actions. When all affected rows disappear, progress moves to the Files toolbar until the next action is available.
+
+Refresh open Colab tabs after updating. The permissions are the same as in 0.10.14. Download tracking is optional. With it enabled, the extension waits for Chrome to confirm the save. With it disabled, Colab handles the browser transfer.

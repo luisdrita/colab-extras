@@ -13,9 +13,16 @@ chrome.runtime.onMessage.addListener((args,sender,reply)=>{
         typeof args.name!=='string'||/[\\/]/.test(args.name)||!args.name.endsWith('.zip')||
         typeof args.operation!=='string'||!/^[a-f0-9-]{36}$/.test(args.operation))throw new Error('Invalid managed download.');
       const id=await chrome.downloads.download({url:args.url,filename:args.name,conflictAction:'uniquify',saveAs:false});
-      records.push({id,operation:args.operation,name:args.name,time:Date.now()});
+      records.push({id,tabId:sender.tab.id,operation:args.operation,name:args.name,time:Date.now()});
       await chrome.storage.local.set({downloads:records});
       return {id};
+    }
+    if(fromColab&&['downloadState','cancelJobDownload'].includes(args.action)){
+      const record=records.find(item=>item.id===args.id&&item.tabId===sender.tab.id&&item.operation===args.operation);
+      const [item]=record?await chrome.downloads.search({id:record.id}):[];
+      if(!item||item.byExtensionId!==chrome.runtime.id)throw new Error('Could not confirm the Chrome download status.');
+      if(args.action==='cancelJobDownload'&&item.state==='in_progress')await chrome.downloads.cancel(record.id);
+      return {state:item.state,error:item.error};
     }
     if(!fromPopup)throw new Error('Manage local files from the extension popup.');
     if(args.action==='list'){

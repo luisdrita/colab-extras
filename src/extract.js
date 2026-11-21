@@ -4,6 +4,7 @@ async function runExtract(target){
   if(jobs.size)return;
   const id=crypto.randomUUID();
   const job={kind:'extract',path,view:target.view,id,dir:'/content/.colab-folder-zip-'+id,cancelled:false,terminal:null};
+  let outcome;
   jobs.set(path,job);setStatus(job,'Checking archive…');addMenuItems();
   try{
     job.ctx=context();const ctx=job.ctx;
@@ -17,20 +18,9 @@ async function runExtract(target){
     if(job.cancelled)throw new Error('Cancelled.');
     job.terminal.send(`python3 -B ${quote(job.dir+'/extract_archive.py')} ${quote(path)} ${quote(job.dir)}${preferences.overwrite?' --overwrite':''}\n`);
     job.started=true;
-    let misses=0,cancelSent=false;
-    while(true){
-      await sleep(750);
-      if(job.cancelled&&!cancelSent){await put(ctx,job.dir+'/cancel','cancel');cancelSent=true;}
-      let response;
-      try{response=await request(ctx,'/files/'+encodePath(job.dir+'/status.json')+'?t='+Date.now());}
-      catch(error){
-        if(error.status===404&&++misses<30)continue;
-        if(error.status===404)throw new Error('Extraction did not start. This runtime needs Python 3.8 or later.');
-        throw error;
-      }
-      const result=await response.json();
+    for await(const result of archiveJobStatuses(job)){
       if(['error','cancelled'].includes(result.state)){
-        if(result.path!==path||result.destination!==path.slice(0,path.lastIndexOf('/')))throw new Error('Unexpected extraction status.');
+        if(!matchesExtractionDestination(result,path))throw new Error('Unexpected extraction status.');
         job.settled=true;job.partial=Boolean(result.partial);job.backendCancelled=result.state==='cancelled';
         job.temporaryOriginals=Array.isArray(result.temporary_originals)?result.temporary_originals.filter(p=>typeof p==='string'):[];
         throw new Error(result.error||'Extraction failed.');
@@ -39,12 +29,14 @@ async function runExtract(target){
       if(result.state==='extracted'){job.result=result;job.settled=true;break;}
       const fraction=result.state==='extracting'&&result.total>0?result.done/result.total:null;
       const label=result.state==='checking'?'Checking archive…':fraction===null?'Extracting…':`Extracting ${Math.round(fraction*100)}%`;
-      setStatus(job,label,`Extracting into ${result.destination}`,false,fraction);
+      setStatus(job,label,result.state==='checking'?path:`Extracting into ${result.destination}`,false,fraction);
     }
-    await job.terminal.close();job.terminal=null;
-    try{await document.querySelector('colab-file-browser')?.currentTree?.refresh?.();}catch{}
-    finishStatus(job,'Extracted',`${job.result.files} file(s) extracted into ${job.result.destination}. Archive kept.`);
+    outcome={label:'Extracted',detail:`${job.result.files} file(s) extracted into ${job.result.destination}. Archive kept.`};
   }catch(error){
+    if(error instanceof ArchiveStatusUnavailable){
+      outcome={label:'Extraction status unknown',detail:error.message+' Refresh Files and check the extracted contents before starting again.',error:true};
+      return;
+    }
     const cancelled=job.backendCancelled||(!job.started&&job.cancelled);
     let detail=error.message||'The connection to Colab was lost.';
     if(job.partial){
@@ -52,11 +44,9 @@ async function runExtract(target){
       if(job.temporaryOriginals?.length)detail+=' Temporary originals: '+job.temporaryOriginals.join(', ');
     }
     else if(job.started&&!job.settled)detail+=' Refresh Files to check for partially extracted contents before retrying.';
-    if(job.settled)try{await document.querySelector('colab-file-browser')?.currentTree?.refresh?.();}catch{}
-    finishStatus(job,cancelled?'Extraction cancelled':'Extraction failed',detail,!cancelled||job.partial);
+    outcome={label:cancelled?'Extraction cancelled':'Extraction failed',detail,error:!cancelled||job.partial};
   }finally{
-    await job.terminal?.close();
-    if(job.settled||(job.created&&!job.started))await cleanup(job);
-    jobs.delete(path);addMenuItems();
+    const warning=await finishRuntimeWork(job);
+    finishStatus(job,outcome.label,outcome.detail,outcome.error,warning);
   }
 }

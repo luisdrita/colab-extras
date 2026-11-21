@@ -158,10 +158,11 @@ function syncDeleteMenu(menu,target){
   }
   return handled;
 }
+const bulkActionSelector='[data-cfz-bulk-delete],[data-cfz-action="bulk-delete"],[data-cfz-action="bulk-download"],[data-cfz-action="cancel"]';
 function syncBulkMenuActions(menu,bulk){
   menu.toggleAttribute('data-cfz-bulk-menu',bulk);
   for(const item of menu.querySelectorAll('.goog-menuitem,[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],.goog-menuseparator,[role="separator"]')){
-    const allowed=item.hasAttribute('data-cfz-bulk-delete')||item.dataset.cfzAction==='bulk-delete';
+    const allowed=item.matches(bulkActionSelector);
     if(bulk&&!allowed){
       if(!item.cfzHiddenAction)item.cfzHiddenAction={ariaHidden:item.getAttribute('aria-hidden'),inert:item.hasAttribute('inert')};
       item.setAttribute('data-cfz-bulk-hidden','');item.setAttribute('aria-hidden','true');item.inert=true;
@@ -174,35 +175,56 @@ function syncBulkMenuActions(menu,bulk){
     }
   }
 }
+function activateMenuItem(menu,item){
+  if(item.getAttribute('aria-disabled')==='true')return;
+  const action=item.dataset.cfzAction;
+  const target={path:item.dataset.cfzPath,view:item.cfzView};
+  const deleteTarget=item.cfzDeleteTarget;
+  menu.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',keyCode:27,which:27,bubbles:true}));
+  if(action==='cancel')cancelJob(target.path);
+  else if(action==='bulk-download')void run(target,true,selectionState);
+  else if(action==='details')void runDetails(target);
+  else if(action==='extract')void runExtract(target);
+  else if(action==='zip'||action==='download')void run(target,action==='download');
+  else if(action==='delete'||deleteTarget)void runDelete(deleteTarget||target);
+  else if(action==='bulk-delete'||item.hasAttribute('data-cfz-bulk-delete'))void runBulkDelete();
+}
 function bulkMenuEvent(event){
   if(!event.isTrusted)return;
   const path=event.composedPath(),menu=path.find(node=>node?.getAttribute?.('role')==='menu');
   if(!menu)return;
   const keyboard=event.type==='keydown'||event.type==='keyup';
   const grouped=menu.hasAttribute('data-cfz-bulk-menu');
-  let item=path.find(node=>node?.hasAttribute?.('data-cfz-delete')||node?.dataset?.cfzAction==='bulk-delete')||
-    (keyboard?menu.querySelector('[data-cfz-delete].goog-menuitem-highlight'):null);
+  let item=path.find(node=>node?.matches?.(grouped?bulkActionSelector:'[data-cfz-delete]'));
   if(grouped&&keyboard){
     if(event.key==='Escape')return;
     // CSS alone does not change Closure's internal list of actions. Own
     // keyboard navigation too, so hidden single-item commands cannot run.
     event.preventDefault();event.stopImmediatePropagation();
-    item=menu.querySelector('[data-cfz-delete],[data-cfz-action="bulk-delete"]');
     if(event.type==='keyup')return;
-    if(['ArrowDown','ArrowUp','Home','End'].includes(event.key)){item?.focus();return;}
+    const enabled=[...menu.querySelectorAll(bulkActionSelector)].filter(el=>el.getAttribute('aria-disabled')!=='true');
+    if(['ArrowDown','ArrowUp','Home','End'].includes(event.key)){
+      if(!enabled.length)return;
+      const index=enabled.indexOf(item);
+      let next=0;
+      if(event.key==='End'||(event.key==='ArrowUp'&&index<0))next=enabled.length-1;
+      else if(event.key==='ArrowDown')next=(index+1)%enabled.length;
+      else if(event.key==='ArrowUp')next=(index+enabled.length-1)%enabled.length;
+      enabled[next].focus();return;
+    }
     if(event.key==='Tab'){menu.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',keyCode:27,bubbles:true}));return;}
     if(!['Enter',' '].includes(event.key))return;
+    item=item||enabled.find(el=>el.classList.contains('goog-menuitem-highlight'));
   }else if(keyboard&&!['Enter',' '].includes(event.key))return;
+  else if(keyboard&&!item&&!path.some(node=>node?.dataset?.cfzAction))item=menu.querySelector('[data-cfz-delete].goog-menuitem-highlight');
   if(grouped&&!item){event.preventDefault();event.stopImmediatePropagation();return;}
   if(!item)return;
   // Closure can activate a native item on mouse-up, before click. Suppress
   // every activation phase so its original single-item delete never runs.
   event.preventDefault();event.stopImmediatePropagation();
   if(event.type!=='click'&&event.type!=='keydown')return;
-  if(item.getAttribute('aria-disabled')==='true'||selectionState.busy||jobs.size)return;
-  const target=item.cfzDeleteTarget;
-  menu.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',keyCode:27,which:27,bubbles:true}));
-  if(target)void runDelete(target);else void runBulkDelete();
+  if(event.button>0||event.repeat)return;
+  activateMenuItem(menu,item);
 }
 for(const type of ['pointerdown','mousedown','pointerup','mouseup','click','keydown','keyup'])document.addEventListener(type,bulkMenuEvent,true);
 function batchRoot(job,path){
@@ -224,15 +246,15 @@ function updateBatchStatuses(job){
     let row=job.rows.get(path);
     if(!row){row={path,id:job.id,batch:job};job.rows.set(path,row);}
     const result=results.get(root.path);
-    row.finished=Boolean(result)||Boolean(job.finished);
-    if(result){
+    row.finished=Boolean(job.finished);
+    if(!job.finished){
+      setStatus(row,job.phase||(result?'Finishing batch…':'Deleting…'),path);
+    }else if(result){
       const failed=!result.deleted&&path===root.path;
       setStatus(row,failed?'Delete failed':'Deleted',failed?result.error+(result.partial?' Some contents may already be deleted.':''):path,failed);
-    }else if(job.finished){
+    }else{
       const failed=Boolean(job.failure)&&path===root.path;
       setStatus(row,failed?'Delete failed':'Finished',failed?job.failure:path,failed);
-    }else{
-      setStatus(row,'Deleting…',path);
     }
   }
 }
@@ -247,12 +269,13 @@ async function runBulkDelete(explicitTargets=null){
   try{
     ctx=context();
     if(!explicitTargets&&ctx.runtime!==selectionState.runtime)throw new Error('The runtime changed. Select the files again.');
-    plan=planDeletion(targets);assertRuntime(ctx);
+    plan=planSelection(targets);assertRuntime(ctx);
   }catch(error){selectionMessage(error.message,true);return;}
   const id=crypto.randomUUID();
   const job={kind:'bulk-delete',path:plan[0].path,id,ctx,plan,targets:targets.map(item=>({...item})),rows:new Map(),dir:'/content/.colab-folder-zip-'+id,terminal:null,results:[]};
   // Snapshot the targets, lock the batch and draw every ring before any
   // asynchronous runtime work. There is no confirmation or success dialog.
+  let failure,summary,failedTarget;
   selectionState.busy=true;jobs.set(job.path,job);
   updateBatchStatuses(job);addMenuItems();
   try{
@@ -281,21 +304,24 @@ async function runBulkDelete(explicitTargets=null){
       if(result.state==='complete'){job.settled=true;break;}
       selectionMessage(`Deleting ${result.completed} of ${plan.length}…`);
     }
-    finishBatchStatuses(job);
     const failed=job.results.filter(item=>!item.deleted),deleted=job.results.length-failed.length;
-    selectionMessage(`${deleted} item${deleted===1?'':'s'} deleted.`+(failed.length?` ${failed.length} failed.\n`+failed.map(item=>item.path+': '+item.error+(item.partial?' Some contents may already be deleted.':'')).join('\n'):''),failed.length>0,failed[0]);
+    summary=`${deleted} item${deleted===1?'':'s'} deleted.`+(failed.length?` ${failed.length} failed.\n`+failed.map(item=>item.path+': '+item.error+(item.partial?' Some contents may already be deleted.':'')).join('\n'):'');
+    failedTarget=failed[0];
   }catch(error){
     const deleted=job.results.filter(item=>item.deleted).length;
     const uncertain=job.started&&!job.settled;
     const message=(error.message||'Connection lost.')+(uncertain?' The result for remaining items is unknown. Refresh Files before retrying.':'');
-    finishBatchStatuses(job,message);
-    selectionMessage(`${deleted?deleted+' item(s) confirmed deleted. ':''}${message}`,true,plan.find(item=>!job.results.some(result=>result.path===item.path&&result.deleted)));
+    failure=message;
+    summary=`${deleted?deleted+' item(s) confirmed deleted. ':''}${message}`;
+    failedTarget=plan.find(item=>!job.results.some(result=>result.path===item.path&&result.deleted));
   }finally{
-    try{await job.terminal?.close();}catch{}
-    if(job.settled||(job.created&&!job.started))await cleanup(job);
-    if(job.started){try{await document.querySelector('colab-file-browser')?.currentTree?.refresh?.();}catch{selectionMessage('Refresh Files to update the list.',true);}}
-    updateBatchStatuses(job);
-    jobs.delete(job.path);selectionState.busy=false;addMenuItems();refreshSelection();
+    const warning=await finishRuntimeWork(job);
+    selectionState.busy=false;
+    finishBatchStatuses(job,failure);
+    job.fallback?.element.remove();
+    selectionMessage([summary,warning].filter(Boolean).join(' '),Boolean(failedTarget||failure||warning),failedTarget);
+    jobs.delete(job.path);addMenuItems();
+
   }
 }
 refreshSelection();

@@ -29,7 +29,7 @@ const fs=require('node:fs');
    const pair=async()=>{await select('/content/results');await select('/content/notes.txt');};
    const start=async(path='/content/results',keyboard=false)=>{
     await row(path).click({button:'right'});
-    assert.equal(await menu.getByRole('menuitem').count(),1);assert.equal(await menu.getByRole('separator').count(),0);
+    assert.equal(await menu.getByRole('menuitem').count(),2);assert.equal(await menu.getByRole('separator').count(),0);
     if(keyboard){await menu.press('ArrowDown');await page.keyboard.press('ArrowUp');await page.keyboard.press('r');await page.keyboard.press('Enter');}
     else await menu.getByRole('menuitem',{name:/Delete selected items/}).click();
     await page.waitForFunction(()=>document.getElementById('events').textContent.includes('Started delete'));
@@ -42,12 +42,41 @@ const fs=require('node:fs');
    assert.equal(await page.locator('[data-cfz-select],[data-cfz-selection]').count(),0);
    assert.deepEqual(await chosen(),['/content/notes.txt','/content/results']);
    await row('/content/results').click({button:'right'});
-   assert.equal(await menu.getByRole('menuitem').count(),1);await menu.press('Escape');
+   assert.equal(await menu.getByRole('menuitem').count(),2);await menu.press('Escape');
    await page.locator('h1').click({button:'right'});assert.equal((await chosen()).length,2);
    await page.keyboard.press('Escape');await page.locator('h1').click();assert.deepEqual(await chosen(),[]);
    await pair();await row('/content/other-folder').click({button:'right'});
    assert.deepEqual(await chosen(),['/content/other-folder']);assert.equal(await menu.getByRole('menuitem',{name:'Folder details',exact:true}).count(),1);await menu.press('Escape');
    console.log(`PASS ${platform}: modifier selection, outside left-click, right-click preservation and group-only menus`);
+
+   await load('slow');await pair();
+   await row('/content/notes.txt').click({button:'right'});
+   if(platform==='MacIntel'){
+    await menu.press('Home');await page.keyboard.press('Enter');
+   }else await menu.getByRole('menuitem',{name:'Download selected as ZIP (2)',exact:true}).click();
+   await page.waitForFunction(()=>state.job?.kind==='selection-zip');
+   assert.deepEqual(await page.evaluate(()=>fileActionArgs.get(state.job.path)),[
+    {path:'/content/results',isDirectory:true},{path:'/content/notes.txt',isDirectory:false}
+   ]);
+   await progress('/content/results').waitFor();await progress('/content/notes.txt').waitFor();
+   assert.equal(await progress('/content/other-folder').count(),0);
+   await refresh();await progress('/content/results').waitFor();
+   await page.locator('#scenario').selectOption('normal');await done();
+   assert.equal((await log()).match(/Download requested: \/content\/selected-files\.zip/g)?.length,1);
+   assert.ok(!(await log()).includes('Started delete'));
+   assert.deepEqual(await chosen(),['/content/notes.txt','/content/results']);
+   console.log(`PASS ${platform}: grouped ZIP stages mixed inputs, restores row progress, preserves selection and downloads exactly once`);
+
+   await load('slow');await pair();await row('/content/results').click({button:'right'});
+   await menu.getByRole('menuitem',{name:/Download selected as ZIP/}).click();
+   await page.waitForFunction(()=>state.job?.kind==='selection-zip');
+   await page.locator('h1').click();
+   await row('/content/notes.txt').click({button:'right'});
+   await menu.getByRole('menuitem',{name:'Cancel ZIP',exact:true}).click();
+   await page.waitForFunction(()=>state.cancelled&&!document.querySelector('[data-cfz-progress]'));
+   assert.ok(!(await log()).includes('Download requested'));
+   assert.ok(!(await log()).includes('Started delete'));
+   console.log(`PASS ${platform}: cancel from another participating file after clearing the selection`);
 
    await load('delete-slow',true);await row('/content/results').click();
    await select('/content/results/first.txt');await select('/content/results/second.txt');
@@ -110,12 +139,12 @@ const fs=require('node:fs');
    if(process.env.UI_SCREENSHOTS){fs.mkdirSync(process.env.UI_SCREENSHOTS,{recursive:true});await page.screenshot({path:process.env.UI_SCREENSHOTS+'/Batch_Progress_'+platform+'.png'});}
    console.log(`PASS ${platform}: immediate execution, no dialogs, animated rings to the right of file names on all targets and newly visible descendants, refresh and deselection`);
    await page.locator('#scenario').selectOption('bulk-first-complete');
-   await progress('/content/results').waitFor({state:'detached'});assert.equal(await progress('/content/results/nested').count(),0);assert.equal(await progress('/content/notes.txt').count(),1);
-   await refresh();assert.equal(await progress('/content/results').count(),0);assert.equal(await progress('/content/notes.txt').count(),1);
+   await page.getByRole('progressbar',{name:'Finishing batch…'}).first().waitFor();assert.equal(await progress('/content/results/nested').count(),1);assert.equal(await progress('/content/notes.txt').count(),1);
+   await refresh();assert.equal(await progress('/content/results').count(),1);assert.equal(await progress('/content/notes.txt').count(),1);
    await page.locator('#scenario').selectOption('normal');await done();
    assert.equal(await view('/content/results').count(),0);assert.equal(await view('/content/notes.txt').count(),0);assert.equal(await view('/content/other-folder').count(),1);
    assert.equal((await log()).match(/Started delete/g).length,1);assert.ok(!(await log()).includes('NATIVE SINGLE DELETE'));
-   console.log(`PASS ${platform}: each completed item stops its ring while pending items remain busy, with quiet successful completion`);
+   console.log(`PASS ${platform}: completed rows keep their rings while the batch is busy, with quiet successful completion`);
 
    await load('delete-slow');await row('/content/results').click();await select('/content/results/nested');await select('/content/notes.txt');await start('/content/results/nested',true);
    assert.equal(await page.locator('[data-cfz-progress]').count(),2);
@@ -193,12 +222,15 @@ const fs=require('node:fs');
    console.log(`PASS ${platform}: deletion shortcut starts directly and repeated keys cannot launch native duplicate deletion`);
 
    await load('delete-slow');await pair();await start();
-   await page.evaluate(()=>{kernel.runtime={};document.body.append(document.createElement('span'));});await done();
+   await page.evaluate(()=>{kernel.runtime={};document.body.append(document.createElement('span'));});
+   await row('/content/demo.zip').click({button:'right'});
+   await page.waitForFunction(()=>document.querySelector('[data-cfz-action="extract"]')?.getAttribute('aria-disabled')==='false');
+   assert.ok(!(await log()).includes('Files sidebar refreshed'));
    assert.deepEqual(await chosen(),[]);assert.equal(await page.locator('[data-cfz-progress]').count(),0);
    console.log(`PASS ${platform}: runtime changes remove old progress instead of attaching it to new-runtime files`);
 
    await load();await select('/content/demo.zip');await select('/content/demo.tar.gz');await row('/content/demo.zip').click({button:'right'});
-   assert.equal(await menu.getByRole('menuitem').count(),1);assert.equal(await menu.getByRole('menuitem',{name:'Extract here',exact:true}).count(),0);await menu.press('Escape');
+   assert.equal(await menu.getByRole('menuitem').count(),2);assert.equal(await menu.getByRole('menuitem',{name:'Extract here',exact:true}).count(),0);await menu.press('Escape');
    await row('/content/demo.zip').click();await row('/content/demo.zip').click({button:'right'});assert.equal(await menu.getByRole('menuitem',{name:'Extract here',exact:true}).count(),1);
    await menu.press('Escape');await page.close();
    console.log(`PASS ${platform}: single-item actions remain hidden for groups and restored for one file`);

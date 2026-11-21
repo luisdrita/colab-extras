@@ -1,12 +1,12 @@
 # Colab Extras — Privacy policy
 
-Effective 10 November 2026 · Extension version 0.10.14
+Effective 21 November 2026 · Extension version 0.11.3
 
 Colab Extras provides file tools in Google Colab. It does not send your files, notebook contents, or operation data to the developer or an external file-processing service.
 
 ## Information used
 
-For requested file operations, the extension reads file paths, names, metadata, contents, and results. ZIP creation, extraction, and verification run inside your connected runtime. Native Colab upload, rename and folder-creation APIs are not intercepted or recorded. When multiple rows are selected, the existing Delete menu entry acts on that group. The current sidebar location is read in page memory to show a Back to /content shortcut outside the session folder. Sidebar locations, folder expansion, and preference changes are not tracked as history.
+For requested file operations, the extension reads file paths, names, metadata, contents, and results. ZIP creation, extraction, and verification run inside your connected runtime. Native Colab upload, rename and folder-creation APIs are not intercepted or recorded. Selected files and folders can be downloaded together as one ZIP or deleted as a group. The current sidebar location is read in page memory to show a Back to /content shortcut outside the session folder. Sidebar locations, folder expansion, and preference changes are not tracked as history.
 
 The extension does not collect unrelated browsing history, passwords, keystrokes, analytics, advertising identifiers, or payment information. It does not require an extension account.
 
@@ -30,7 +30,7 @@ The required `storage` permission stores metadata for the extension's own option
 
 ## Choices and limitations
 
-You choose which actions to run. Extraction preserves existing files and folders by creating numbered copies by default; the popup can explicitly enable permanent replacement instead. Failed or cancelled extraction attempts rollback of the running operation while preserving later changes. Extension runtime file and folder deletion, including bulk deletion, starts immediately without a confirmation dialog. Deletion is permanent and does not use Trash. File selections are held in page memory for the connected runtime and are not stored as history. Completed operations cannot be reversed through the extension.
+You choose which actions to run. Extraction creates a folder named after the archive and numbers it if the name is already taken. The popup can enable replacement of matching files inside the archive-named folder. Failed or cancelled extraction attempts rollback of the running operation while preserving later changes. Extension runtime file and folder deletion, including bulk deletion, starts immediately without a confirmation dialog. Deletion is permanent and does not use Trash. File selections are held in page memory for the connected runtime and are not stored as history. Completed operations cannot be reversed through the extension.
 
 You can disable or uninstall Colab Extras in Chrome. The developer receives none of the operation data. Chrome Web Store may provide aggregate installation statistics and feedback that you submit.
 
